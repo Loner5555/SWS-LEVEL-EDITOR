@@ -11,6 +11,8 @@ const App = {
     _gridSize: 'medium',
     _autoSaveTimer: null,
     _clipboard: null,
+    _metadataSource: null,
+    _metadataLoadedAt: null,
 
     async init() {
         this.bindToolbar();
@@ -20,52 +22,176 @@ const App = {
         this.log('SWS Level Studio v5', 'info');
         try {
             await IDBCache.open();
-            // 1. Try load from IndexedDB cache first
-            if (await MetadataDB.loadFromCache()) {
-                this.log(`Metadata (cache): ${MetadataDB.size()} entries`, 'info');
-                this.updateMetadataBanner();
-                this.renderPalette();
-            } else {
-                // 2. If no cache, try local/metadata.json
-                await this.autoLoadLocal();
+            // ALWAYS try metadata.json first — it is the source of truth
+            let loadedFromFile = false;
+            try {
+                const res = await fetch('local/metadata.json');
+                if (res.ok) {
+                    const json = await res.json();
+                    MetadataDB._ingest(json);
+                    MetadataDB._loaded = true;
+                    await MetadataDB.saveToCache();
+                    this._metadataSource = 'local/metadata.json';
+                    this._metadataLoadedAt = new Date();
+                    const stats = MetadataDB.buildStats();
+                    this.log(`✅ Loaded: local/metadata.json → ${MetadataDB.size()} entries`, 'info');
+                    this.log(`   Units: ${stats.categories.Unit||0} | Generals: ${stats.categories.General||0} | Spells: ${stats.categories.Spell||0} | Slottable: ${stats.categories.Slottable||0}`, 'info');
+                    this.updateMetadataBanner();
+                    this.renderPalette();
+                    loadedFromFile = true;
+                }
+            } catch(e) { /* fetch failed — file:// or CORS */ }
+
+            if (!loadedFromFile) {
+                // Try AssetResources.asset auto-build
+                try {
+                    const res = await fetch('local/AssetResources.asset');
+                    if (res.ok) {
+                        const text = await res.text();
+                        MetadataDB.buildFromAssetResources(text);
+                        await MetadataDB.saveToCache();
+                        this._metadataSource = 'local/AssetResources.asset (auto-built)';
+                        this._metadataLoadedAt = new Date();
+                        const stats = MetadataDB.buildStats();
+                        this.log(`✅ Auto-built from AssetResources → ${MetadataDB.size()} entries`, 'info');
+                        this.log(`   Units: ${stats.categories.Unit||0} | Generals: ${stats.categories.General||0} | Spells: ${stats.categories.Spell||0}`, 'info');
+                        this.updateMetadataBanner();
+                        this.renderPalette();
+                        loadedFromFile = true;
+                    }
+                } catch(e) { /* not found */ }
             }
+
+            if (!loadedFromFile) {
+                // Fallback: IndexedDB cache (may be stale!)
+                if (await MetadataDB.loadFromCache()) {
+                    this._metadataSource = 'IndexedDB cache (⚠ may be stale)';
+                    this._metadataLoadedAt = new Date();
+                    const stats = MetadataDB.buildStats();
+                    this.log(`📦 Metadata from cache: ${MetadataDB.size()} entries`, 'info');
+                    this.log(`   Units: ${stats.categories.Unit||0} | Generals: ${stats.categories.General||0} | Spells: ${stats.categories.Spell||0}`, 'info');
+                    this.log('⚠ Using IndexedDB cache — metadata.json not found in local/', 'warning');
+                    this.updateMetadataBanner();
+                    this.renderPalette();
+                } else {
+                    this.log('💡 Tip: Click 📂 Scan to load metadata from ExportedProject folder', 'info');
+                }
+            }
+
             const ws = await IDBCache.loadWorkspace();
             if (ws?.theme) document.documentElement.setAttribute('data-theme', ws.theme);
             if (ws?.gridSize) this._gridSize = ws.gridSize;
         } catch(e) { console.warn('Init error:', e); }
         this._autoSaveTimer = setInterval(() => { if(LevelParser.isLoaded()&&LevelParser.isDirty()) LevelParser.autoSave().catch(()=>{}); }, 60000);
+        // Quick diagnostic check
+        this._checkGiant();
     },
 
-    // ─── AUTO-LOAD from local/ folder ───
-    async autoLoadLocal() {
-        // Try metadata.json first
+    _checkGiant() {
+        if (!MetadataDB.isLoaded()) return;
+        // Search for Giant by name
+        const results = MetadataDB.search('Giant');
+        const giantUnit = results.find(e => e.DisplayName === 'Giant' && (e.Category === 'Unit' || e.Category === 'Slottable'));
+        if (!giantUnit) {
+            this.log('⚠ Diagnostic: "Giant" not found as Unit/Slottable in metadata', 'warning');
+            const anyGiant = results.find(e => e.DisplayName === 'Giant');
+            if (anyGiant) this.log(`   Found Giant as ${anyGiant.Category} (ID: ${anyGiant.Id})`, 'warning');
+        }
+    },
+
+    // ─── CLEAR CACHE ───
+    async clearCache() {
         try {
-            const res = await fetch('local/metadata.json');
-            if (res.ok) {
-                const json = await res.json();
-                MetadataDB._ingest(json);
-                MetadataDB._loaded = true;
-                await MetadataDB.saveToCache();
-                this.log(`✅ Auto-loaded: local/metadata.json (${MetadataDB.size()} entries)`, 'info');
-                this.updateMetadataBanner();
-                this.renderPalette();
-                return;
+            await IDBCache.clearAll();
+            MetadataDB._db.clear();
+            MetadataDB._loaded = false;
+            this._metadataSource = null;
+            this._metadataLoadedAt = null;
+            this.updateMetadataBanner();
+            this.renderPalette();
+            this.log('🧹 Cache cleared (IndexedDB + metadata). Reloading...', 'info');
+            setTimeout(() => location.reload(), 500);
+        } catch(e) {
+            this.log(`Clear cache error: ${e.message}`, 'error');
+        }
+    },
+
+    // ─── DEBUG METADATA PANEL ───
+    showMetadataDebug() {
+        const ins = document.querySelector('#property-inspector'); ins.innerHTML = '';
+        const stats = MetadataDB.isLoaded() ? MetadataDB.buildStats() : { total: 0, categories: {} };
+
+        ins.appendChild(this._el('div', {class: 'inspector-header', innerHTML: '<span class="inspector-title">🔬 Metadata Debug</span>'}));
+
+        const info = [
+            ['Source', this._metadataSource || '(not loaded)'],
+            ['Loaded At', this._metadataLoadedAt ? this._metadataLoadedAt.toLocaleString() : '—'],
+            ['Total Entries', stats.total],
+            ['', ''],
+            ['Units', stats.categories.Unit || 0],
+            ['Generals', stats.categories.General || 0],
+            ['Spells', stats.categories.Spell || 0],
+            ['Slottable', stats.categories.Slottable || 0],
+            ['Tech', stats.categories.Tech || 0],
+            ['Research', stats.categories.Research || 0],
+            ['Entity', stats.categories.Entity || 0],
+            ['VFX', stats.categories.VFX || 0],
+            ['Unknown', stats.categories.Unknown || 0],
+        ];
+
+        const table = this._el('div', {style: 'padding: 8px'});
+        info.forEach(([label, value]) => {
+            if (!label) { table.appendChild(this._el('hr', {style: 'border: none; border-top: 1px solid var(--border-subtle); margin: 4px 0'})); return; }
+            const row = this._el('div', {style: 'display:flex;justify-content:space-between;padding:3px 0;font-size:12px'});
+            row.innerHTML = `<span style="color:var(--text-muted)">${label}</span><span style="font-weight:600">${value}</span>`;
+            table.appendChild(row);
+        });
+        ins.appendChild(table);
+
+        // Specific unit checks
+        const checkSec = this._el('div', {style: 'padding: 8px; border-top: 1px solid var(--border-subtle)'});
+        checkSec.appendChild(this._el('div', {style: 'font-weight: 600; margin-bottom: 6px; font-size: 12px', textContent: '🔍 Spot Checks'}));
+        const checks = ['Giant', 'ArchisCampaign', 'Archis', 'Crawler', 'KaiRider', 'Eclipsor', 'Medusa', 'Swordwrath'];
+        checks.forEach(name => {
+            const results = MetadataDB.search(name);
+            const match = results.find(e => e.InternalName === name || e.DisplayName === name || e.DisplayName === MetadataDB._splitCamelCase(name));
+            const row = this._el('div', {style: 'display:flex;justify-content:space-between;padding:2px 0;font-size:11px'});
+            if (match) {
+                row.innerHTML = `<span>${name}</span><span style="color:var(--status-success)">✅ ${match.Category} (${match.Id.slice(0,8)}…)</span>`;
+            } else {
+                row.innerHTML = `<span>${name}</span><span style="color:var(--status-error)">❌ NOT FOUND</span>`;
             }
-        } catch(e) { /* fetch failed — file:// or not found */ }
-        // Try AssetResources.asset for auto-build
-        try {
-            const res = await fetch('local/AssetResources.asset');
-            if (res.ok) {
-                const text = await res.text();
-                MetadataDB.buildFromAssetResources(text);
-                await MetadataDB.saveToCache();
-                this.log(`✅ Auto-built from local/AssetResources.asset → ${MetadataDB.size()} entries`, 'info');
-                this.updateMetadataBanner();
-                this.renderPalette();
-                return;
-            }
-        } catch(e) { /* not found */ }
-        this.log('💡 Tip: Place metadata.json or AssetResources.asset in local/ folder for auto-load', 'info');
+            checkSec.appendChild(row);
+        });
+        ins.appendChild(checkSec);
+
+        // Actions
+        const actSec = this._el('div', {style: 'padding: 8px; display:flex; flex-direction:column; gap:6px'});
+        const clearBtn = this._el('button', {class: 'btn-add-inline', style: 'background: var(--status-error); color: white', textContent: '🧹 Clear All Cache & Reload'});
+        clearBtn.onclick = () => this.clearCache();
+        actSec.appendChild(clearBtn);
+
+        const refreshBtn = this._el('button', {class: 'btn-add-inline', textContent: '🔄 Force Reload metadata.json'});
+        refreshBtn.onclick = async () => {
+            try {
+                const res = await fetch('local/metadata.json?t=' + Date.now());
+                if (res.ok) {
+                    const json = await res.json();
+                    MetadataDB._ingest(json);
+                    MetadataDB._loaded = true;
+                    await MetadataDB.saveToCache();
+                    this._metadataSource = 'local/metadata.json (force-reloaded)';
+                    this._metadataLoadedAt = new Date();
+                    this.log(`✅ Force-reloaded metadata.json → ${MetadataDB.size()} entries`, 'info');
+                    this.updateMetadataBanner(); this.renderPalette();
+                    this.showMetadataDebug(); // Refresh debug panel
+                } else {
+                    this.log('❌ metadata.json not found at local/metadata.json', 'error');
+                }
+            } catch(e) { this.log(`Fetch error: ${e.message}`, 'error'); }
+        };
+        actSec.appendChild(refreshBtn);
+        ins.appendChild(actSec);
     },
 
     // ─── EXPORT METADATA ───
@@ -106,6 +232,8 @@ const App = {
         $('#btn-clear-logs')?.addEventListener('click',()=>{$('#log-container').innerHTML='';});
         $('#btn-theme-toggle')?.addEventListener('click',()=>{const t=document.documentElement.getAttribute('data-theme');const n=t==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);IDBCache.saveWorkspace({theme:n,gridSize:this._gridSize}).catch(()=>{});});
         $('#btn-integrity-test')?.addEventListener('click',()=>this.runIntegrityTest());
+        $('#btn-debug-metadata')?.addEventListener('click',()=>this.showMetadataDebug());
+        $('#btn-clear-cache')?.addEventListener('click',()=>this.clearCache());
         $('#unit-search')?.addEventListener('input',e=>this.renderPalette(e.target.value));
         // Grid size
         document.querySelectorAll('.grid-size-btn').forEach(btn=>{btn.addEventListener('click',()=>{this._gridSize=btn.dataset.size;document.querySelectorAll('.grid-size-btn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');this.renderPalette();IDBCache.saveWorkspace({gridSize:this._gridSize}).catch(()=>{});});});
@@ -436,12 +564,17 @@ const App = {
             const card=this._el('div',{class:'action-card trigger-card'});
             const head=this._el('div',{class:'action-card-header'});
             head.innerHTML=`<span class="action-card-icon" style="color:var(--status-info)">🔔</span><span class="action-card-title">${tt?tt.label:'Trigger'}</span>`;
-            head.appendChild(this._makeMenu([
-                {l:'⧉ Dup',a:()=>{triggers.splice(ti+1,0,JSON.parse(JSON.stringify(trig)));LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}},
-                {l:'⬆',a:()=>{if(ti>0){[triggers[ti-1],triggers[ti]]=[triggers[ti],triggers[ti-1]];LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}}},
-                {l:'⬇',a:()=>{if(ti<triggers.length-1){[triggers[ti],triggers[ti+1]]=[triggers[ti+1],triggers[ti]];LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}}},
-                {l:'🗑',a:()=>{triggers.splice(ti,1);LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderTimeline();this.renderHierarchy();}},
+            // Visible trigger buttons (Delete + Menu)
+            const trigBtnWrap=this._el('div',{style:'display:flex;gap:2px;align-items:center;margin-left:auto'});
+            const trigDelBtn=this._el('button',{class:'item-menu-btn',title:'Delete trigger',textContent:'🗑',style:'color:var(--status-error);font-size:12px'});
+            trigDelBtn.onclick=(e)=>{e.stopPropagation();LevelParser._pushUndo();triggers.splice(ti,1);LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderTimeline();this.renderHierarchy();this.log('Trigger deleted','info');};
+            trigBtnWrap.appendChild(trigDelBtn);
+            trigBtnWrap.appendChild(this._makeMenu([
+                {l:'⧉ Duplicate',a:()=>{triggers.splice(ti+1,0,JSON.parse(JSON.stringify(trig)));LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}},
+                {l:'⬆ Move Up',a:()=>{if(ti>0){[triggers[ti-1],triggers[ti]]=[triggers[ti],triggers[ti-1]];LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}}},
+                {l:'⬇ Move Down',a:()=>{if(ti<triggers.length-1){[triggers[ti],triggers[ti+1]]=[triggers[ti+1],triggers[ti]];LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}}},
             ]));
+            head.appendChild(trigBtnWrap);
             card.appendChild(head);
             // Click to inspect
             head.style.cursor='pointer';
@@ -466,13 +599,18 @@ const App = {
             let label=at?at.label:'Action';
             if(act.ActionType===0){const u=act.SpawnUnits?.Units?.Array||[];if(u.length)label+=': '+u.map(x=>`${x.Number||1}×${MetadataDB.resolveWithFallback(x.AssetRefSlottableSpec?.Id?.Value||0)}`).join(', ');}
             head.innerHTML=`<span class="action-card-icon" style="color:${at?.color||'#666'}">${at?at.label.charAt(0):'?'}</span><span class="action-card-title">${label}</span>`;
-            head.appendChild(this._makeMenu([
-                {l:'⧉ Dup',a:()=>{actions.splice(ai+1,0,JSON.parse(JSON.stringify(act)));LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();this.renderTimeline();}},
-                {l:'⬆',a:()=>{if(ai>0){[actions[ai-1],actions[ai]]=[actions[ai],actions[ai-1]];LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}}},
-                {l:'⬇',a:()=>{if(ai<actions.length-1){[actions[ai],actions[ai+1]]=[actions[ai+1],actions[ai]];LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}}},
+            // Visible action buttons (Delete + Menu)
+            const btnWrap=this._el('div',{style:'display:flex;gap:2px;align-items:center;margin-left:auto'});
+            const delBtn=this._el('button',{class:'item-menu-btn',title:'Delete action',textContent:'🗑',style:'color:var(--status-error);font-size:12px'});
+            delBtn.onclick=(e)=>{e.stopPropagation();LevelParser._pushUndo();actions.splice(ai,1);LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderTimeline();this.renderHierarchy();this.log('Action deleted','info');};
+            btnWrap.appendChild(delBtn);
+            btnWrap.appendChild(this._makeMenu([
+                {l:'⧉ Duplicate',a:()=>{actions.splice(ai+1,0,JSON.parse(JSON.stringify(act)));LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();this.renderTimeline();}},
+                {l:'⬆ Move Up',a:()=>{if(ai>0){[actions[ai-1],actions[ai]]=[actions[ai],actions[ai-1]];LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}}},
+                {l:'⬇ Move Down',a:()=>{if(ai<actions.length-1){[actions[ai],actions[ai+1]]=[actions[ai+1],actions[ai]];LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}}},
                 {l:'📋 Copy',a:()=>{this._clipboard={type:'action',data:JSON.parse(JSON.stringify(act))};this.log('Copied','info');}},
-                {l:'🗑',a:()=>{actions.splice(ai,1);LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderTimeline();this.renderHierarchy();}},
             ]));
+            head.appendChild(btnWrap);
             card.appendChild(head);
             head.style.cursor='pointer';
             head.addEventListener('click',e=>{if(e.target.closest('.item-menu-btn'))return;this.selectedActionIdx=ai;this.selectedTriggerIdx=-1;this.inspectAction(ei,ai);this.setContextForAction(act.ActionType);});

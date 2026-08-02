@@ -457,6 +457,19 @@ window.IDBCache = {
       request.onerror = () => reject(request.error);
     });
   },
+
+  async clearAll() {
+    await this.open();
+    return new Promise((resolve, reject) => {
+      const tx = this._db.transaction(['metadata', 'levels', 'workspace'], 'readwrite');
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.objectStore('metadata').clear();
+      tx.objectStore('levels').clear();
+      tx.objectStore('workspace').clear();
+    });
+  },
+
   async saveMetadata(data) { await this.put('metadata', 'current', { data, timestamp: Date.now(), version: 3 }); },
   async loadMetadata() { return await this.get('metadata', 'current'); },
   async saveLevel(filename, jsonData) { await this.put('levels', filename, { data: jsonData, timestamp: Date.now() }); },
