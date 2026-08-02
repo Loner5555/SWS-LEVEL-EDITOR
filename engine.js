@@ -495,11 +495,18 @@ window.MetadataDB = {
   // ═══ CATEGORY FROM PATH ═══
   _categoryFromPath(pathOrFile) {
     const p = (pathOrFile || '').toLowerCase().replace(/\\/g, '/');
+    // Slottable sub-paths (most specific first)
     if (p.includes('/slottables/campaign/generals/') || p.includes('/generals/')) return 'General';
     if (p.includes('/slottables/spell/') || p.includes('/spells/')) return 'Spell';
-    if (p.includes('/slottables/tech/') || p.includes('/research/')) return 'Research';
+    if (p.includes('/slottables/research/')) return 'Research';
+    if (p.includes('/slottables/tech/')) return 'Tech';
+    if (p.includes('/slottables/upgradebuildings/')) return 'UpgradeBuilding';
+    if (p.includes('/slottables/difficulty/')) return 'Difficulty';
+    if (p.includes('/slottables/hidden/')) return 'Hidden';
+    if (p.includes('/slottables/views/')) return 'SlottableView';
     if (p.includes('/slottables/campaign/')) return 'Unit';
     if (p.includes('/slottables/')) return 'Slottable';
+    // Other game DB paths
     if (p.includes('/equipment/')) return 'Equipment';
     if (p.includes('/gametype/')) return 'GameType';
     if (p.includes('/upgradebuildings/')) return 'UpgradeBuilding';
@@ -511,6 +518,7 @@ window.MetadataDB = {
     if (p.includes('/profilepic/')) return 'ProfilePic';
     if (p.includes('/music/')) return 'Music';
     if (p.includes('/video/')) return 'Video';
+    // Technical / runtime
     if (p.includes('/entities/') || p.includes('/entityview/')) return 'Entity';
     if (p.includes('/vfx/')) return 'VFX';
     if (p.includes('/aiteams/')) return 'AITeam';
@@ -518,16 +526,22 @@ window.MetadataDB = {
     if (p.includes('/capturepoint/')) return 'CapturePoint';
     if (p.includes('/projectile/')) return 'Projectile';
     if (p.includes('/localization/')) return 'Localization';
+    if (p.includes('/spine/')) return 'Spine';
+    if (p.includes('/sfx/')) return 'SFX';
+    if (p.includes('/unitcustomizations/')) return 'UnitCustomization';
+    if (p.includes('/techtrees/')) return 'TechTree';
     return 'Unknown';
   },
 
   // ═══ SOURCE PRIORITY FROM PATH ═══
   _sourcePriorityFromPath(pathOrFile) {
     const p = (pathOrFile || '').toLowerCase().replace(/\\/g, '/');
+    if (p.includes('/slottables/campaign/generals/')) return 2;
     if (p.includes('/slottables/campaign/')) return 2;
     if (p.includes('/slottables/')) return 1;
-    if (p.includes('/db/') && !p.includes('/entities/')) return 3;
+    if (p.includes('/db/') && !p.includes('/entities/') && !p.includes('/spine/')) return 3;
     if (p.includes('/entities/') || p.includes('/entityview/')) return 5;
+    if (p.includes('/spine/') || p.includes('/vfx/')) return 6;
     return 4;
   },
 
@@ -601,10 +615,14 @@ window.MetadataDB = {
       existing.Source = newData.Source || existing.Source;
     }
 
-    // Category: Slottable-derived ALWAYS overrides Entity-derived
-    const gameplayCategories = ['Unit', 'General', 'Spell', 'Research', 'Equipment', 'Slottable'];
-    if (gameplayCategories.includes(newData.Category) && !gameplayCategories.includes(existing.Category)) {
+    // Category: Gameplay categories NEVER overridden by technical categories
+    const gameplayCategories = ['Unit', 'General', 'Spell', 'Research', 'Equipment', 'Slottable', 'Tech', 'UpgradeBuilding'];
+    const technicalCategories = ['Entity', 'VFX', 'Prefab', 'Projectile', 'Spine', 'SFX', 'Other', 'Unknown'];
+    if (gameplayCategories.includes(newData.Category) && technicalCategories.includes(existing.Category)) {
+      // Gameplay always beats technical
       existing.Category = newData.Category;
+    } else if (technicalCategories.includes(newData.Category) && gameplayCategories.includes(existing.Category)) {
+      // Technical NEVER beats gameplay — keep existing
     } else if (newPri < existPri && newData.Category && newData.Category !== 'Unknown') {
       existing.Category = newData.Category;
     }
@@ -703,6 +721,18 @@ window.MetadataDB = {
   // ═══ BUILD FROM ASSETRESOURCES (Priority 4) ═══
   buildFromAssetResources(yamlText) {
     const entries = window.YAMLParser.parseAssetResources(yamlText);
+    // Sort: process Entity/VFX/Spine FIRST, then Slottable LAST
+    // so Slottable merge wins over Entity for same GUID
+    const priorityOrder = (path) => {
+      const p = (path || '').toLowerCase();
+      if (p.includes('/slottables/')) return 90; // Process last (wins merge)
+      if (p.includes('/entities/')) return 10;   // Process first
+      if (p.includes('/spine/')) return 5;
+      if (p.includes('/vfx/')) return 5;
+      return 50;
+    };
+    entries.sort((a, b) => priorityOrder(a.path) - priorityOrder(b.path));
+
     for (const entry of entries) {
       const category = this._categoryFromPath(entry.path);
       const displayName = this._extractDisplayName(entry.path) ||
@@ -723,16 +753,24 @@ window.MetadataDB = {
   },
 
   // ═══ ENRICH FROM SLOTTABLE YAML (Priority 1-2) ═══
-  enrichFromSlottable(yamlText) {
+  enrichFromSlottable(yamlText, filePath) {
     const data = window.YAMLParser.parseSlottableAsset(yamlText);
     if (data.guidValue) {
       const idStr = String(data.guidValue);
       const rawName = data.name || data.mName || '';
       const displayName = this._splitCamelCase(rawName);
 
+      // Determine category from path first, then IsBuildableUnit
+      const fp = (filePath || data.path || '').toLowerCase();
       let category = 'Slottable';
-      if (data.isBuildableUnit) category = 'Unit';
-      else if (data.path && data.path.toLowerCase().includes('spell')) category = 'Spell';
+      let priority = 1;
+      if (fp.includes('/campaign/generals/') || fp.includes('/generals/')) { category = 'General'; priority = 2; }
+      else if (fp.includes('/spell/') || fp.includes('/spells/')) category = 'Spell';
+      else if (fp.includes('/research/')) category = 'Research';
+      else if (fp.includes('/tech/')) category = 'Tech';
+      else if (fp.includes('/upgradebuildings/')) category = 'UpgradeBuilding';
+      else if (fp.includes('/campaign/')) { category = 'Unit'; priority = 2; }
+      else if (data.isBuildableUnit) category = 'Unit';
 
       this._mergeEntry(idStr, {
         Id: idStr,
@@ -740,9 +778,10 @@ window.MetadataDB = {
         InternalName: rawName,
         Category: category,
         Source: 'SlottableYAML',
-        SourcePriority: 1,
+        SourcePriority: priority,
         Description: data.description || '',
         IsBuildableUnit: data.isBuildableUnit,
+        Path: data.path || filePath || '',
         Cost: data.cost
       });
     }
@@ -792,11 +831,20 @@ window.MetadataDB = {
     const results = [];
     for (const [id, entry] of this._db) {
       if (entry.Category === 'Unit' ||
-          (entry.Category === 'Slottable' && entry.IsBuildableUnit)) {
+          (entry.Category === 'Slottable' && entry.IsBuildableUnit) ||
+          (entry.Category === 'Slottable' && this._isRootSlottable(entry))) {
         results.push(entry);
       }
     }
     return results.sort((a, b) => (a.DisplayName || '').localeCompare(b.DisplayName || ''));
+  },
+
+  // Heuristic: root-level slottables (no subfolder) are likely spawnable units
+  _isRootSlottable(entry) {
+    const p = (entry.Path || '').toLowerCase().replace(/\\/g, '/');
+    // Match DB/Slottables/Name (no further subfolder)
+    const m = p.match(/\/slottables\/([^/]+)$/);
+    return !!m;
   },
 
   getGenerals() {
@@ -805,6 +853,83 @@ window.MetadataDB = {
 
   getSpells() {
     return this.getByCategory('Spell');
+  },
+
+  // ═══ BUILD FROM FOLDER (webkitdirectory FileList) ═══
+  async buildFromFolder(fileList, progressCb) {
+    const stats = { total: 0, assetRes: 0, slottables: 0, entities: 0, spells: 0, other: 0, skipped: 0 };
+    const files = Array.from(fileList);
+    const assetFiles = files.filter(f => f.name.endsWith('.asset') && !f.name.endsWith('.meta'));
+    stats.total = assetFiles.length;
+
+    // Pass 1: Find and process AssetResources.asset (base layer, Priority 4)
+    for (const file of assetFiles) {
+      if (file.name === 'AssetResources.asset') {
+        if (progressCb) progressCb('Building base from AssetResources...');
+        const text = await file.text();
+        this.buildFromAssetResources(text);
+        stats.assetRes = this._db.size;
+        break;
+      }
+    }
+
+    // Pass 2: Enrich with slottable .asset files (Priority 1-2)
+    let processed = 0;
+    for (const file of assetFiles) {
+      const rp = (file.webkitRelativePath || '').toLowerCase().replace(/\\/g, '/');
+      if (!rp.includes('/db/slottables/')) continue;
+      if (rp.includes('/views/')) { stats.skipped++; continue; }
+      try {
+        const text = await file.text();
+        this.enrichFromSlottable(text, file.webkitRelativePath);
+        stats.slottables++;
+      } catch(e) { stats.skipped++; }
+      processed++;
+      if (progressCb && processed % 50 === 0) progressCb(`Scanning slottables: ${processed}...`);
+    }
+
+    // Pass 3: Enrich with entity .asset files (Priority 5, fallback only)
+    for (const file of assetFiles) {
+      const rp = (file.webkitRelativePath || '').toLowerCase().replace(/\\/g, '/');
+      if (!rp.includes('/db/entities/')) continue;
+      try {
+        const text = await file.text();
+        this.enrichFromGenericAsset(text, file.webkitRelativePath);
+        stats.entities++;
+      } catch(e) { stats.skipped++; }
+    }
+
+    // Pass 4: Enrich with spell .asset files
+    for (const file of assetFiles) {
+      const rp = (file.webkitRelativePath || '').toLowerCase().replace(/\\/g, '/');
+      if (!rp.includes('/db/spells/')) continue;
+      if (!rp.includes('prototype')) continue; // Only EntityPrototype, not EntityView
+      try {
+        const text = await file.text();
+        this.enrichFromGenericAsset(text, file.webkitRelativePath);
+        stats.spells++;
+      } catch(e) { stats.skipped++; }
+    }
+
+    this._loaded = true;
+    return stats;
+  },
+
+  // ═══ EXPORT METADATA AS DOWNLOADABLE JSON ═══
+  exportMetadataBlob() {
+    const obj = Object.fromEntries(this._db);
+    const json = JSON.stringify(obj, null, 2);
+    return new Blob([json], { type: 'application/json' });
+  },
+
+  // ═══ BUILD STATS ═══
+  buildStats() {
+    const cats = {};
+    for (const [id, entry] of this._db) {
+      const c = entry.Category || 'Unknown';
+      cats[c] = (cats[c] || 0) + 1;
+    }
+    return { total: this._db.size, categories: cats };
   }
 };
 

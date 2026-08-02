@@ -93,6 +93,9 @@ const App = {
         $('#btn-build-metadata')?.addEventListener('click',()=>$('#file-input-asset-resources').click());
         $('#btn-export-metadata')?.addEventListener('click',()=>this.exportMetadata());
         $('#file-input-asset-resources')?.addEventListener('change',e=>this.buildMetadataFromFiles(e));
+        // Folder scan (webkitdirectory)
+        $('#btn-scan-project')?.addEventListener('click',()=>$('#file-input-folder').click());
+        $('#file-input-folder')?.addEventListener('change',e=>this.scanProjectFolder(e));
         $('#btn-save')?.addEventListener('click',()=>this.saveLevel());
         $('#btn-new')?.addEventListener('click',()=>this.createNewLevel());
         $('#btn-duplicate')?.addEventListener('click',()=>this.duplicateLevel());
@@ -116,7 +119,30 @@ const App = {
             if(e.ctrlKey&&e.key==='z'){e.preventDefault();if(LevelParser.undo())this.refreshAll();}
             if(e.ctrlKey&&e.key==='y'){e.preventDefault();if(LevelParser.redo())this.refreshAll();}
             if(e.ctrlKey&&e.key==='p'){e.preventDefault();this.openGlobalSearch();}
-            if(e.key==='Delete'&&this.selectedEventIdx>=0&&this.selectedActionIdx<0&&this.selectedTriggerIdx<0)this.deleteEvent(this.selectedEventIdx);
+            // Delete: event (no action selected), action (action selected), trigger (trigger selected)
+            if(e.key==='Delete'&&this.selectedEventIdx>=0) {
+                if(this.selectedActionIdx>=0) {
+                    // Delete selected action
+                    const acts=LevelParser.getEvents()[this.selectedEventIdx]?.Actions?.Array;
+                    if(acts){LevelParser._pushUndo();acts.splice(this.selectedActionIdx,1);LevelParser._dirty=true;this.selectedActionIdx=-1;this.inspectEventOverview(this.selectedEventIdx);this.renderTimeline();this.renderHierarchy();this.log('Action deleted','info');}
+                } else if(this.selectedTriggerIdx>=0) {
+                    // Delete selected trigger
+                    const trigs=LevelParser.getEvents()[this.selectedEventIdx]?.Triggers?.Array;
+                    if(trigs){LevelParser._pushUndo();trigs.splice(this.selectedTriggerIdx,1);LevelParser._dirty=true;this.selectedTriggerIdx=-1;this.inspectEventOverview(this.selectedEventIdx);this.renderTimeline();this.renderHierarchy();this.log('Trigger deleted','info');}
+                } else {
+                    this.deleteEvent(this.selectedEventIdx);
+                }
+            }
+            // Ctrl+C: copy action
+            if(e.ctrlKey&&e.key==='c'&&this.selectedActionIdx>=0&&this.selectedEventIdx>=0) {
+                const act=(LevelParser.getEvents()[this.selectedEventIdx]?.Actions?.Array||[])[this.selectedActionIdx];
+                if(act){this._clipboard={type:'action',data:JSON.parse(JSON.stringify(act))};this.log('Action copied (Ctrl+C)','info');}
+            }
+            // Ctrl+V: paste action
+            if(e.ctrlKey&&e.key==='v'&&this._clipboard?.type==='action'&&this.selectedEventIdx>=0) {
+                const acts=LevelParser.getEvents()[this.selectedEventIdx]?.Actions?.Array;
+                if(acts){LevelParser._pushUndo();acts.push(JSON.parse(JSON.stringify(this._clipboard.data)));LevelParser._dirty=true;this.inspectEventOverview(this.selectedEventIdx);this.renderTimeline();this.renderHierarchy();this.log('Action pasted (Ctrl+V)','info');}
+            }
         });
     },
 
@@ -169,15 +195,40 @@ const App = {
         const files=e.target.files; if(!files?.length)return;
         this.log(`Scanning ${files.length} files...`,'info');
         let ar=0,as=0;
-        for(const f of files){try{const t=await f.text();if(f.name==='AssetResources.asset'||f.name.includes('AssetResources')){MetadataDB.buildFromAssetResources(t);ar++;}else if(f.name.endsWith('.asset')&&t.includes('Identifier:')){const rp=f.webkitRelativePath||f.name;if(typeof MetadataDB.enrichFromGenericAsset==='function')MetadataDB.enrichFromGenericAsset(t,rp);else MetadataDB.enrichFromSlottable(t);as++;}}catch(err){}}
+        for(const f of files){try{const t=await f.text();if(f.name==='AssetResources.asset'||f.name.includes('AssetResources')){MetadataDB.buildFromAssetResources(t);ar++;}else if(f.name.endsWith('.asset')&&t.includes('Identifier:')){const rp=f.webkitRelativePath||f.name;MetadataDB.enrichFromSlottable(t,rp);as++;}}catch(err){}}
         await MetadataDB.saveToCache();
+        const stats=MetadataDB.buildStats();
         this.log(`Built: ${ar} AssetResources + ${as} assets → ${MetadataDB.size()} entries`,'info');
+        this.log(`  Units: ${stats.categories.Unit||0}, Generals: ${stats.categories.General||0}, Spells: ${stats.categories.Spell||0}, Slottable: ${stats.categories.Slottable||0}, Entity: ${stats.categories.Entity||0}`,'info');
         this.updateMetadataBanner();this.refreshAll();this.renderPalette();e.target.value='';
         // Auto-export metadata.json
         if (MetadataDB.size() > 0) {
             this.exportMetadata();
             this.log('💡 Save metadata.json vào thư mục local/ để tự load lần sau', 'info');
         }
+    },
+    // ─── SCAN PROJECT FOLDER (webkitdirectory) ───
+    async scanProjectFolder(e) {
+        const files=e.target.files; if(!files?.length)return;
+        this.log(`📂 Scanning project folder: ${files.length} files...`,'info');
+        try {
+            const stats = await MetadataDB.buildFromFolder(files, (msg) => this.log(msg, 'info'));
+            await MetadataDB.saveToCache();
+            const bs = MetadataDB.buildStats();
+            this.log(`✅ Scan complete: ${MetadataDB.size()} total entries`,'info');
+            this.log(`  AssetResources base: ${stats.assetRes} | Slottables: ${stats.slottables} | Entities: ${stats.entities} | Spells: ${stats.spells}`,'info');
+            this.log(`  Units: ${bs.categories.Unit||0} | Generals: ${bs.categories.General||0} | Spells: ${bs.categories.Spell||0} | Tech: ${bs.categories.Tech||0}`,'info');
+            this.updateMetadataBanner(); this.refreshAll(); this.renderPalette();
+            // Auto-download metadata.json
+            const blob = MetadataDB.exportMetadataBlob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = 'metadata.json'; a.click();
+            URL.revokeObjectURL(url);
+            this.log('💾 metadata.json auto-exported — save to local/ folder', 'info');
+        } catch(err) {
+            this.log(`❌ Scan error: ${err.message}`, 'error');
+        }
+        e.target.value='';
     },
     saveLevel() {
         if(!LevelParser.isLoaded()){this.log('No level','warning');return;}
@@ -464,8 +515,16 @@ const App = {
         const at=Schema.ACTION_TYPES[act.ActionType];
         const dk=at?.dataKey;
         const data=dk?act[dk]:null;
-        // Header
-        ins.appendChild(this._el('div',{class:'inspector-header',style:`border-left:4px solid ${at?.color||'#666'}`,innerHTML:`<span class="inspector-title">🎬 ${at?at.label:'Action'}</span>`}));
+        // Header with delete button
+        const header=this._el('div',{class:'inspector-header',style:`border-left:4px solid ${at?.color||'#666'};display:flex;justify-content:space-between;align-items:center`});
+        header.innerHTML=`<span class="inspector-title">🎬 ${at?at.label:'Action'}</span>`;
+        const delBtn=this._el('button',{class:'spawn-btn danger',textContent:'🗑 Delete',title:'Delete this action (Delete key)',style:'padding:2px 8px;font-size:11px'});
+        delBtn.onclick=()=>{
+            const acts=LevelParser.getEvents()[ei]?.Actions?.Array;
+            if(acts){LevelParser._pushUndo();acts.splice(ai,1);LevelParser._dirty=true;this.selectedActionIdx=-1;this.inspectEventOverview(ei);this.renderTimeline();this.renderHierarchy();this.log('Action deleted','info');}
+        };
+        header.appendChild(delBtn);
+        ins.appendChild(header);
         // Type selector
         ins.appendChild(this._propSelect('Action Type',act.ActionType,Object.entries(Schema.ACTION_TYPES).map(([k,v])=>({value:parseInt(k),label:v.label})),v=>{LevelParser.set(`${bp}.ActionType`,v);this.inspectAction(ei,ai);this.renderTimeline();this.renderHierarchy();}));
         if(!data){const back=this._el('button',{class:'btn-back',textContent:'← Back'});back.onclick=()=>this.inspectEventOverview(ei);ins.appendChild(back);return;}
