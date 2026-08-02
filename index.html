@@ -27,7 +27,8 @@
                 <button id="btn-undo" class="btn icon-btn" title="Ctrl+Z">↩</button>
                 <button id="btn-redo" class="btn icon-btn" title="Ctrl+Y">↪</button>
                 <button id="btn-import-metadata" class="btn" title="Import metadata.json">📋</button>
-                <button id="btn-build-metadata" class="btn" title="Build from folder">🔨 Build</button>
+                <button id="btn-scan-project" class="btn primary" title="Scan ExportedProject folder (webkitdirectory)">📂 Scan</button>
+                <button id="btn-build-metadata" class="btn" title="Build from AssetResources files">🔨 Build</button>
                 <button id="btn-export-metadata" class="btn" title="Export metadata.json to local/">💾 Meta</button>
                 <button id="btn-validate" class="btn" title="Validate">✓</button>
                 <button id="btn-integrity-test" class="btn" title="Integrity">🔍</button>
@@ -97,6 +98,7 @@
     <input type="file" id="file-input-level" accept=".json" style="display:none">
     <input type="file" id="file-input-metadata" accept=".json" style="display:none">
     <input type="file" id="file-input-asset-resources" accept=".asset,.json" multiple webkitdirectory style="display:none">
+    <input type="file" id="file-input-folder" webkitdirectory directory style="display:none">
 
     <!-- Context Menu -->
     <div id="context-menu" class="context-menu" style="display:none"></div>

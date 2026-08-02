@@ -93,6 +93,9 @@ const App = {
         $('#btn-build-metadata')?.addEventListener('click',()=>$('#file-input-asset-resources').click());
         $('#btn-export-metadata')?.addEventListener('click',()=>this.exportMetadata());
         $('#file-input-asset-resources')?.addEventListener('change',e=>this.buildMetadataFromFiles(e));
+        // Folder scan (webkitdirectory)
+        $('#btn-scan-project')?.addEventListener('click',()=>$('#file-input-folder').click());
+        $('#file-input-folder')?.addEventListener('change',e=>this.scanProjectFolder(e));
         $('#btn-save')?.addEventListener('click',()=>this.saveLevel());
         $('#btn-new')?.addEventListener('click',()=>this.createNewLevel());
         $('#btn-duplicate')?.addEventListener('click',()=>this.duplicateLevel());
@@ -116,7 +119,30 @@ const App = {
             if(e.ctrlKey&&e.key==='z'){e.preventDefault();if(LevelParser.undo())this.refreshAll();}
             if(e.ctrlKey&&e.key==='y'){e.preventDefault();if(LevelParser.redo())this.refreshAll();}
             if(e.ctrlKey&&e.key==='p'){e.preventDefault();this.openGlobalSearch();}
-            if(e.key==='Delete'&&this.selectedEventIdx>=0&&this.selectedActionIdx<0&&this.selectedTriggerIdx<0)this.deleteEvent(this.selectedEventIdx);
+            // Delete: event (no action selected), action (action selected), trigger (trigger selected)
+            if(e.key==='Delete'&&this.selectedEventIdx>=0) {
+                if(this.selectedActionIdx>=0) {
+                    // Delete selected action
+                    const acts=LevelParser.getEvents()[this.selectedEventIdx]?.Actions?.Array;
+                    if(acts){LevelParser._pushUndo();acts.splice(this.selectedActionIdx,1);LevelParser._dirty=true;this.selectedActionIdx=-1;this.inspectEventOverview(this.selectedEventIdx);this.renderTimeline();this.renderHierarchy();this.log('Action deleted','info');}
+                } else if(this.selectedTriggerIdx>=0) {
+                    // Delete selected trigger
+                    const trigs=LevelParser.getEvents()[this.selectedEventIdx]?.Triggers?.Array;
+                    if(trigs){LevelParser._pushUndo();trigs.splice(this.selectedTriggerIdx,1);LevelParser._dirty=true;this.selectedTriggerIdx=-1;this.inspectEventOverview(this.selectedEventIdx);this.renderTimeline();this.renderHierarchy();this.log('Trigger deleted','info');}
+                } else {
+                    this.deleteEvent(this.selectedEventIdx);
+                }
+            }
+            // Ctrl+C: copy action
+            if(e.ctrlKey&&e.key==='c'&&this.selectedActionIdx>=0&&this.selectedEventIdx>=0) {
+                const act=(LevelParser.getEvents()[this.selectedEventIdx]?.Actions?.Array||[])[this.selectedActionIdx];
+                if(act){this._clipboard={type:'action',data:JSON.parse(JSON.stringify(act))};this.log('Action copied (Ctrl+C)','info');}
+            }
+            // Ctrl+V: paste action
+            if(e.ctrlKey&&e.key==='v'&&this._clipboard?.type==='action'&&this.selectedEventIdx>=0) {
+                const acts=LevelParser.getEvents()[this.selectedEventIdx]?.Actions?.Array;
+                if(acts){LevelParser._pushUndo();acts.push(JSON.parse(JSON.stringify(this._clipboard.data)));LevelParser._dirty=true;this.inspectEventOverview(this.selectedEventIdx);this.renderTimeline();this.renderHierarchy();this.log('Action pasted (Ctrl+V)','info');}
+            }
         });
     },
 
@@ -169,15 +195,40 @@ const App = {
         const files=e.target.files; if(!files?.length)return;
         this.log(`Scanning ${files.length} files...`,'info');
         let ar=0,as=0;
-        for(const f of files){try{const t=await f.text();if(f.name==='AssetResources.asset'||f.name.includes('AssetResources')){MetadataDB.buildFromAssetResources(t);ar++;}else if(f.name.endsWith('.asset')&&t.includes('Identifier:')){const rp=f.webkitRelativePath||f.name;if(typeof MetadataDB.enrichFromGenericAsset==='function')MetadataDB.enrichFromGenericAsset(t,rp);else MetadataDB.enrichFromSlottable(t);as++;}}catch(err){}}
+        for(const f of files){try{const t=await f.text();if(f.name==='AssetResources.asset'||f.name.includes('AssetResources')){MetadataDB.buildFromAssetResources(t);ar++;}else if(f.name.endsWith('.asset')&&t.includes('Identifier:')){const rp=f.webkitRelativePath||f.name;MetadataDB.enrichFromSlottable(t,rp);as++;}}catch(err){}}
         await MetadataDB.saveToCache();
+        const stats=MetadataDB.buildStats();
         this.log(`Built: ${ar} AssetResources + ${as} assets → ${MetadataDB.size()} entries`,'info');
+        this.log(`  Units: ${stats.categories.Unit||0}, Generals: ${stats.categories.General||0}, Spells: ${stats.categories.Spell||0}, Slottable: ${stats.categories.Slottable||0}, Entity: ${stats.categories.Entity||0}`,'info');
         this.updateMetadataBanner();this.refreshAll();this.renderPalette();e.target.value='';
         // Auto-export metadata.json
         if (MetadataDB.size() > 0) {
             this.exportMetadata();
             this.log('💡 Save metadata.json vào thư mục local/ để tự load lần sau', 'info');
         }
+    },
+    // ─── SCAN PROJECT FOLDER (webkitdirectory) ───
+    async scanProjectFolder(e) {
+        const files=e.target.files; if(!files?.length)return;
+        this.log(`📂 Scanning project folder: ${files.length} files...`,'info');
+        try {
+            const stats = await MetadataDB.buildFromFolder(files, (msg) => this.log(msg, 'info'));
+            await MetadataDB.saveToCache();
+            const bs = MetadataDB.buildStats();
+            this.log(`✅ Scan complete: ${MetadataDB.size()} total entries`,'info');
+            this.log(`  AssetResources base: ${stats.assetRes} | Slottables: ${stats.slottables} | Entities: ${stats.entities} | Spells: ${stats.spells}`,'info');
+            this.log(`  Units: ${bs.categories.Unit||0} | Generals: ${bs.categories.General||0} | Spells: ${bs.categories.Spell||0} | Tech: ${bs.categories.Tech||0}`,'info');
+            this.updateMetadataBanner(); this.refreshAll(); this.renderPalette();
+            // Auto-download metadata.json
+            const blob = MetadataDB.exportMetadataBlob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = 'metadata.json'; a.click();
+            URL.revokeObjectURL(url);
+            this.log('💾 metadata.json auto-exported — save to local/ folder', 'info');
+        } catch(err) {
+            this.log(`❌ Scan error: ${err.message}`, 'error');
+        }
+        e.target.value='';
     },
     saveLevel() {
         if(!LevelParser.isLoaded()){this.log('No level','warning');return;}
@@ -464,8 +515,16 @@ const App = {
         const at=Schema.ACTION_TYPES[act.ActionType];
         const dk=at?.dataKey;
         const data=dk?act[dk]:null;
-        // Header
-        ins.appendChild(this._el('div',{class:'inspector-header',style:`border-left:4px solid ${at?.color||'#666'}`,innerHTML:`<span class="inspector-title">🎬 ${at?at.label:'Action'}</span>`}));
+        // Header with delete button
+        const header=this._el('div',{class:'inspector-header',style:`border-left:4px solid ${at?.color||'#666'};display:flex;justify-content:space-between;align-items:center`});
+        header.innerHTML=`<span class="inspector-title">🎬 ${at?at.label:'Action'}</span>`;
+        const delBtn=this._el('button',{class:'spawn-btn danger',textContent:'🗑 Delete',title:'Delete this action (Delete key)',style:'padding:2px 8px;font-size:11px'});
+        delBtn.onclick=()=>{
+            const acts=LevelParser.getEvents()[ei]?.Actions?.Array;
+            if(acts){LevelParser._pushUndo();acts.splice(ai,1);LevelParser._dirty=true;this.selectedActionIdx=-1;this.inspectEventOverview(ei);this.renderTimeline();this.renderHierarchy();this.log('Action deleted','info');}
+        };
+        header.appendChild(delBtn);
+        ins.appendChild(header);
         // Type selector
         ins.appendChild(this._propSelect('Action Type',act.ActionType,Object.entries(Schema.ACTION_TYPES).map(([k,v])=>({value:parseInt(k),label:v.label})),v=>{LevelParser.set(`${bp}.ActionType`,v);this.inspectAction(ei,ai);this.renderTimeline();this.renderHierarchy();}));
         if(!data){const back=this._el('button',{class:'btn-back',textContent:'← Back'});back.onclick=()=>this.inspectEventOverview(ei);ins.appendChild(back);return;}
@@ -473,15 +532,23 @@ const App = {
 
         // ──── SPAWN UNITS (Unity-style) ────
         if(act.ActionType===0) {
-            ins.appendChild(this._propNumber('Side',data.Side||0,v=>{LevelParser.set(`${dp}.Side`,v);}));
-            ins.appendChild(this._propNumber('Team',data.TeamIndex||0,v=>{LevelParser.set(`${dp}.TeamIndex`,v);}));
+            ins.appendChild(this._propSide('Side',data.Side||0,v=>{LevelParser.set(`${dp}.Side`,v);}));
+            ins.appendChild(this._propTeam('Team',data.TeamIndex||0,v=>{LevelParser.set(`${dp}.TeamIndex`,v);}));
+            ins.appendChild(this._propBool('Always Attacks',data.AlwaysAttacks,v=>{LevelParser.set(`${dp}.AlwaysAttacks`,v);},'Units will attack immediately'));
+            ins.appendChild(this._propBool('Hold Position',data.HoldPosition,v=>{LevelParser.set(`${dp}.HoldPosition`,v);},'Units stay at spawn point'));
             const unitsSec=this._el('div',{class:'spawn-units-section'});
             unitsSec.appendChild(this._el('div',{class:'inspector-section-title',textContent:'Units'}));
             const units=data.Units?.Array||[];
             units.forEach((u,ui)=>{
-                const name=MetadataDB.resolveWithFallback(u.AssetRefSlottableSpec?.Id?.Value||0);
+                const unitId=u.AssetRefSlottableSpec?.Id?.Value||0;
+                const name=MetadataDB.resolveWithFallback(unitId);
                 const card=this._el('div',{class:'spawn-unit-card'});
-                card.innerHTML=`<div class="spawn-unit-header"><span class="spawn-unit-icon">⚔</span><span class="spawn-unit-name">${name}</span></div>`;
+                card.innerHTML=`<div class="spawn-unit-header"><span class="spawn-unit-icon">⚔</span><span class="spawn-unit-name" style="cursor:pointer" title="Click to change unit">${name}</span></div>`;
+                // Click unit name → picker to REPLACE
+                card.querySelector('.spawn-unit-name').onclick=()=>this.openAssetPicker('Unit',entry=>{
+                    LevelParser.set(`${dp}.Units.Array.${ui}.AssetRefSlottableSpec.Id.Value`,String(entry.Id));
+                    this.inspectAction(ei,ai);
+                });
                 const body=this._el('div',{class:'spawn-unit-body'});
                 const countRow=this._el('div',{class:'spawn-unit-count-row'});
                 countRow.innerHTML=`<span>Count</span>`;
@@ -489,6 +556,8 @@ const App = {
                 numIn.onchange=()=>{LevelParser.set(`${dp}.Units.Array.${ui}.Number`,parseInt(numIn.value)||1);this.renderTimeline();this.renderHierarchy();};
                 countRow.appendChild(numIn);
                 body.appendChild(countRow);
+                // Difficulties
+                body.appendChild(this._propDifficulties('Spawn On',u.DifficultiesToSpawnOn?.Array||[0,1,2],v=>{LevelParser.set(`${dp}.Units.Array.${ui}.DifficultiesToSpawnOn.Array`,v);}));
                 // Action buttons
                 const btns=this._el('div',{class:'spawn-unit-actions'});
                 if(ui>0){const up=this._el('button',{class:'spawn-btn',textContent:'↑',title:'Move Up'});up.onclick=()=>{[units[ui-1],units[ui]]=[units[ui],units[ui-1]];LevelParser._dirty=true;this.inspectAction(ei,ai);this.renderHierarchy();};btns.appendChild(up);}
@@ -508,7 +577,7 @@ const App = {
             unitsSec.appendChild(addUnit);
             ins.appendChild(unitsSec);
             // Advanced
-            this._renderAdvanced(data,dp,ins,['Units','Side','TeamIndex']);
+            this._renderAdvanced(data,dp,ins,['Units','Side','TeamIndex','AlwaysAttacks','HoldPosition','AlwaysAttacksStatue']);
         }
         // ──── CAMERA PAN ────
         else if(act.ActionType===2) {
@@ -529,8 +598,8 @@ const App = {
         }
         // ──── SPAWN GENERAL ────
         else if(act.ActionType===1) {
-            ins.appendChild(this._propNumber('Side',data.Side||0,v=>LevelParser.set(`${dp}.Side`,v)));
-            ins.appendChild(this._propNumber('Team',data.TeamIndex||0,v=>LevelParser.set(`${dp}.TeamIndex`,v)));
+            ins.appendChild(this._propSide('Side',data.Side||0,v=>LevelParser.set(`${dp}.Side`,v)));
+            ins.appendChild(this._propTeam('Team',data.TeamIndex||0,v=>LevelParser.set(`${dp}.TeamIndex`,v)));
             // General picker
             if(data.AssetRefSlottableSpec?.Id?.Value!==undefined){
                 ins.appendChild(this._propAssetPicker('General',String(data.AssetRefSlottableSpec.Id.Value),'General',v=>{LevelParser.set(`${dp}.AssetRefSlottableSpec.Id.Value`,v);this.inspectAction(ei,ai);}));
@@ -559,14 +628,14 @@ const App = {
         }
         // ──── TEAM AI COMMAND ────
         else if(act.ActionType===20) {
-            ins.appendChild(this._propNumber('Side',data.Side||0,v=>LevelParser.set(`${dp}.Side`,v)));
-            ins.appendChild(this._propNumber('Team',data.TeamIndex||0,v=>LevelParser.set(`${dp}.TeamIndex`,v)));
+            ins.appendChild(this._propSide('Side',data.Side||0,v=>LevelParser.set(`${dp}.Side`,v)));
+            ins.appendChild(this._propTeam('Team',data.TeamIndex||0,v=>LevelParser.set(`${dp}.TeamIndex`,v)));
             this._renderAdvanced(data,dp,ins,['Side','TeamIndex']);
         }
         // ──── GIVE RESEARCH ────
         else if(act.ActionType===21) {
-            if(data.AssetRefResearchSpec?.Id?.Value!==undefined)ins.appendChild(this._propAssetRef('Research',String(data.AssetRefResearchSpec.Id.Value),`${dp}.AssetRefResearchSpec.Id.Value`));
-            ins.appendChild(this._propNumber('Side',data.Side||0,v=>LevelParser.set(`${dp}.Side`,v)));
+            if(data.AssetRefResearchSpec?.Id?.Value!==undefined)ins.appendChild(this._propAssetPicker('Research',String(data.AssetRefResearchSpec.Id.Value),'Research',v=>{LevelParser.set(`${dp}.AssetRefResearchSpec.Id.Value`,v);this.inspectAction(ei,ai);}));
+            ins.appendChild(this._propSide('Side',data.Side||0,v=>LevelParser.set(`${dp}.Side`,v)));
             this._renderAdvanced(data,dp,ins,['AssetRefResearchSpec','Side']);
         }
         // ──── TIME SCALE ────
@@ -581,8 +650,8 @@ const App = {
         }
         // ──── GIVE UPGRADE BUILDING ────
         else if(act.ActionType===39) {
-            if(data.AssetRefUpgradeBuildingSpec?.Id?.Value!==undefined)ins.appendChild(this._propAssetRef('Building',String(data.AssetRefUpgradeBuildingSpec.Id.Value),`${dp}.AssetRefUpgradeBuildingSpec.Id.Value`));
-            ins.appendChild(this._propNumber('Side',data.Side||0,v=>LevelParser.set(`${dp}.Side`,v)));
+            if(data.AssetRefUpgradeBuildingSpec?.Id?.Value!==undefined)ins.appendChild(this._propAssetPicker('Building',String(data.AssetRefUpgradeBuildingSpec.Id.Value),'UpgradeBuilding',v=>{LevelParser.set(`${dp}.AssetRefUpgradeBuildingSpec.Id.Value`,v);this.inspectAction(ei,ai);}));
+            ins.appendChild(this._propSide('Side',data.Side||0,v=>LevelParser.set(`${dp}.Side`,v)));
             this._renderAdvanced(data,dp,ins,['AssetRefUpgradeBuildingSpec','Side']);
         }
         // ──── ALL OTHERS — Full generic ────
@@ -615,7 +684,23 @@ const App = {
             const val=obj[key],fp=basePath?`${basePath}.${key}`:key;
             if(val===null||val===undefined){rows.push(this._propRow(key,this._el('span',{style:'color:var(--text-muted)',textContent:'null'})));}
             else if(key==='Array'&&Array.isArray(val)){this._renderArr(val,basePath,container,title||'Items');return;}
-            else if(typeof val==='object'&&val.Array!==undefined&&Array.isArray(val.Array)){const g=this._el('div',{class:'prop-group-nested'});const h=this._el('div',{class:'prop-group-header'});h.textContent=`▶ ${key} (${val.Array.length})`;const c=this._el('div',{style:'display:none;padding-left:8px;border-left:2px solid var(--border-subtle)'});h.onclick=()=>{const o=c.style.display!=='none';c.style.display=o?'none':'block';h.textContent=(o?'▶':'▼')+` ${key} (${val.Array.length})`;};this._renderArr(val.Array,`${fp}.Array`,c,key);g.appendChild(h);g.appendChild(c);rows.push(g);}
+            else if(typeof val==='object'&&val.Array!==undefined&&Array.isArray(val.Array)){
+                const g=this._el('div',{class:'prop-group-nested'});
+                const h=this._el('div',{class:'prop-group-header',style:'display:flex;justify-content:space-between;align-items:center'});
+                const lbl=this._el('span',{textContent:`▶ ${key} (${val.Array.length})`,style:'flex:1;cursor:pointer'});
+                const addBtn=this._el('button',{class:'btn-add-inline',textContent:'＋ Add Item',style:'padding:2px 6px'});
+                addBtn.onclick=e=>{
+                    e.stopPropagation();
+                    let newItem={};
+                    if(val.Array.length>0)newItem=JSON.parse(JSON.stringify(val.Array[val.Array.length-1]));
+                    else if(key==='Customizations'||key==='Techs'||key==='Loadout')newItem={Id:{Value:"0"}};
+                    val.Array.push(newItem);LevelParser._dirty=true;this.refreshInspector();
+                };
+                h.appendChild(lbl);h.appendChild(addBtn);
+                const c=this._el('div',{style:'display:none;padding-left:8px;border-left:2px solid var(--border-subtle)'});
+                lbl.onclick=()=>{const o=c.style.display!=='none';c.style.display=o?'none':'block';lbl.textContent=(o?'▶':'▼')+` ${key} (${val.Array.length})`;};
+                this._renderArr(val.Array,`${fp}.Array`,c,key);g.appendChild(h);g.appendChild(c);rows.push(g);
+            }
             else if(typeof val==='object'&&'RawValue'in val&&Object.keys(val).length===1){rows.push(this._propFP(key,val.RawValue,v=>LevelParser.set(`${fp}.RawValue`,Schema.realToFp(v))));}
             else if(typeof val==='object'&&'Value'in val&&Object.keys(val).length===1){const v=val.Value,vs=String(v);if(v===0||v===1||v==='0'||v==='1')rows.push(this._propCheckbox(key,v,nv=>LevelParser.set(`${fp}.Value`,nv?1:0)));else if(vs.length>10)rows.push(this._propAssetRef(key,vs,`${fp}.Value`));else rows.push(this._propNumber(key,typeof v==='string'?parseInt(v):v,nv=>LevelParser.set(`${fp}.Value`,nv)));}
             else if(typeof val==='object'&&val.Id&&typeof val.Id==='object'&&'Value'in val.Id){rows.push(this._propAssetRef(key,String(val.Id.Value),`${fp}.Id.Value`));}
@@ -635,11 +720,20 @@ const App = {
             const ip=`${basePath}.${i}`;
             if(typeof item==='object'&&item!==null){
                 const g=this._el('div',{class:'prop-group-nested',style:'margin:2px 0'});
-                const h=this._el('div',{class:'prop-group-header',style:'display:flex;justify-content:space-between'});
+                const h=this._el('div',{class:'prop-group-header',style:'display:flex;justify-content:space-between;align-items:center'});
                 let il=`[${i}]`;if(item.AssetRefSlottableSpec?.Id?.Value)il+=' '+MetadataDB.resolveWithFallback(item.AssetRefSlottableSpec.Id.Value);else if(item.Id?.Value)il+=' '+MetadataDB.resolveWithFallback(item.Id.Value);
-                const ls=this._el('span',{textContent:`▶ ${il}`});const db=this._el('button',{class:'spawn-btn danger',textContent:'✕'});db.onclick=e=>{e.stopPropagation();arr.splice(i,1);LevelParser._dirty=true;this.refreshAll();};
-                h.appendChild(ls);h.appendChild(db);g.appendChild(h);
-                const c=this._el('div',{style:'display:none;padding-left:8px'});h.onclick=e=>{if(e.target===db)return;const o=c.style.display!=='none';c.style.display=o?'none':'block';ls.textContent=(o?'▶':'▼')+` ${il}`;};
+                const ls=this._el('span',{textContent:`▶ ${il}`,style:'flex:1;cursor:pointer'});
+                const act=this._el('div',{style:'display:flex;gap:2px'});
+                
+                if(i>0){const up=this._el('button',{class:'spawn-btn',textContent:'↑',title:'Move Up'});up.onclick=e=>{e.stopPropagation();[arr[i-1],arr[i]]=[arr[i],arr[i-1]];LevelParser._dirty=true;this.refreshInspector();};act.appendChild(up);}
+                if(i<arr.length-1){const dn=this._el('button',{class:'spawn-btn',textContent:'↓',title:'Move Down'});dn.onclick=e=>{e.stopPropagation();[arr[i],arr[i+1]]=[arr[i+1],arr[i]];LevelParser._dirty=true;this.refreshInspector();};act.appendChild(dn);}
+                
+                const dup=this._el('button',{class:'spawn-btn',textContent:'⧉',title:'Duplicate'});dup.onclick=e=>{e.stopPropagation();arr.splice(i+1,0,JSON.parse(JSON.stringify(item)));LevelParser._dirty=true;this.refreshInspector();};act.appendChild(dup);
+                const db=this._el('button',{class:'spawn-btn danger',textContent:'✕',title:'Delete'});db.onclick=e=>{e.stopPropagation();arr.splice(i,1);LevelParser._dirty=true;this.refreshInspector();};act.appendChild(db);
+                
+                h.appendChild(ls);h.appendChild(act);g.appendChild(h);
+                const c=this._el('div',{style:'display:none;padding-left:8px'});
+                ls.onclick=e=>{const o=c.style.display!=='none';c.style.display=o?'none':'block';ls.textContent=(o?'▶':'▼')+` ${il}`;};
                 this.renderGenericProps(item,ip,c,null);g.appendChild(c);container.appendChild(g);
             }else container.appendChild(this._propScalar(`[${i}]`,item,ip));
         });
@@ -731,6 +825,12 @@ const App = {
     _propFP(l,raw,fn){const i=this._el('input',{type:'number',step:'0.1',value:Schema.fpToReal(raw).toFixed(2)});i.title=`Raw: ${raw}`;i.onchange=()=>{fn(parseFloat(i.value)||0);this.renderTimeline();};return this._propRow(l,i);},
     _propCheckbox(l,v,fn){const i=this._el('input',{type:'checkbox'});i.checked=!!(v&&v!=='0');i.onchange=()=>fn(i.checked);return this._propRow(l,i);},
     _propSelect(l,v,opts,fn){const s=this._el('select');opts.forEach(o=>{const opt=this._el('option',{value:o.value});opt.textContent=o.label;if(String(o.value)===String(v))opt.selected=true;s.appendChild(opt);});s.onchange=()=>fn(parseInt(s.value));return this._propRow(l,s);},
+    // ─── SMART ENUM HELPERS ───
+    _propSide(l,v,fn){return this._propSelect(l,v,[{value:0,label:'← Left Team'},{value:1,label:'Right Team →'}],fn);},
+    _propTeam(l,v,fn){return this._propSelect(l,v,[{value:0,label:'Team 0'},{value:1,label:'Team 1'},{value:2,label:'Team 2'},{value:3,label:'Team 3'}],fn);},
+    _propBool(l,v,fn,tooltip){const r=this._el('div',{class:'property-row'});const lb=this._el('div',{class:'property-label',title:tooltip||l});lb.textContent=this._humanize(l);const vd=this._el('div',{class:'property-value',style:'display:flex;align-items:center;gap:8px'});const cb=this._el('input',{type:'checkbox'});cb.checked=!!(v&&v!=='0'&&v!==0);const lbl=this._el('span',{style:'font-size:11px;color:var(--text-muted)'});lbl.textContent=cb.checked?'Yes':'No';cb.onchange=()=>{lbl.textContent=cb.checked?'Yes':'No';fn(cb.checked?1:0);};vd.appendChild(cb);vd.appendChild(lbl);r.appendChild(lb);r.appendChild(vd);return r;},
+    _propDifficulties(l,arr,fn){const r=this._el('div',{class:'property-row'});const lb=this._el('div',{class:'property-label'});lb.textContent=this._humanize(l);const vd=this._el('div',{class:'property-value',style:'display:flex;gap:4px;flex-wrap:wrap'});[{v:0,n:'Normal'},{v:1,n:'Hard'},{v:2,n:'Insane'}].forEach(d=>{const b=this._el('button',{class:'spawn-btn',style:'width:auto;padding:2px 8px;font-size:11px'});b.textContent=d.n;const on=(arr||[]).includes(d.v);if(on){b.style.background='var(--accent-primary)';b.style.color='white';}b.onclick=()=>{const nv=on?arr.filter(x=>x!==d.v):[...(arr||[]),d.v].sort();fn(nv);this.refreshInspector();};vd.appendChild(b);});r.appendChild(lb);r.appendChild(vd);return r;},
+    refreshInspector(){if(this.selectedActionIdx>=0)this.inspectAction(this.selectedEventIdx,this.selectedActionIdx);else if(this.selectedEventIdx>=0)this.inspectEventOverview(this.selectedEventIdx);this.renderTimeline();this.renderHierarchy();},
     _propAssetRef(l,id,path){const name=MetadataDB.resolveWithFallback(id);const w=this._el('div',{style:'display:flex;gap:4px;align-items:center;width:100%'});const sp=this._el('span',{style:'flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;font-weight:500',title:`ID: ${id}`});sp.textContent=name;if(name.startsWith('Unknown')){sp.style.color='var(--status-warning)';const rb=this._el('button',{class:'spawn-btn',textContent:'🔍',title:'Resolve'});rb.onclick=()=>{const e=MetadataDB.getEntry(id);if(e){sp.textContent=e.DisplayName;sp.style.color='';}else this.log(`ID ${id} not in metadata`,'warning');};w.appendChild(sp);w.appendChild(rb);}else{sp.onclick=()=>{const e=MetadataDB.getEntry(id);if(e)this.showRefExplorer(e);};w.appendChild(sp);}return this._propRow(this._humanize(l),w);},
     // Asset picker row: shows name + [Change] button that opens picker
     _propAssetPicker(label,id,category,onChange){const name=MetadataDB.resolveWithFallback(id);const w=this._el('div',{style:'display:flex;gap:4px;align-items:center;width:100%'});const sp=this._el('span',{style:'flex:1;font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'});sp.textContent=name;w.appendChild(sp);const btn=this._el('button',{class:'spawn-btn',textContent:'⟳',title:`Change ${category}`});btn.onclick=()=>this.openAssetPicker(category,entry=>{onChange(String(entry.Id));sp.textContent=entry.DisplayName;});w.appendChild(btn);return this._propRow(label,w);},
