@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SWS Level Studio</title>
+    <meta name="description" content="Level Composer for Stick War Saga">
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="app-container">
+        <!-- TOOLBAR -->
+        <header class="toolbar">
+            <div class="toolbar-left">
+                <div class="app-title">⚔ SWS <span>Level Studio</span></div>
+                <button id="btn-new" class="btn" title="Ctrl+N">＋ New</button>
+                <button id="btn-open" class="btn" title="Ctrl+O">📂 Open</button>
+                <button id="btn-save" class="btn primary" title="Ctrl+S">💾 Save</button>
+                <button id="btn-duplicate" class="btn" title="Duplicate Level">⧉</button>
+            </div>
+            <div class="toolbar-center">
+                <span id="current-file-name" class="file-name">No level loaded</span>
+                <span id="metadata-banner" class="metadata-banner empty">⚠ No metadata</span>
+            </div>
+            <div class="toolbar-right">
+                <button id="btn-undo" class="btn icon-btn" title="Ctrl+Z">↩</button>
+                <button id="btn-redo" class="btn icon-btn" title="Ctrl+Y">↪</button>
+                <button id="btn-import-metadata" class="btn" title="Import metadata.json">📋</button>
+                <button id="btn-build-metadata" class="btn" title="Build from folder">🔨 Build</button>
+                <button id="btn-export-metadata" class="btn" title="Export metadata.json to local/">💾 Meta</button>
+                <button id="btn-validate" class="btn" title="Validate">✓</button>
+                <button id="btn-integrity-test" class="btn" title="Integrity">🔍</button>
+                <button id="btn-theme-toggle" class="btn icon-btn">🌙</button>
+            </div>
+        </header>
+
+        <!-- MAIN WORKSPACE -->
+        <div class="main-workspace">
+            <!-- LEFT: Hierarchy -->
+            <aside class="left-panel">
+                <div class="panel">
+                    <div class="panel-header"><span>📋 Hierarchy</span></div>
+                    <div class="panel-content" id="hierarchy-tree">
+                        <div class="empty-state">Open a level or create new</div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- CENTER: Timeline + Splitter + Palette -->
+            <main class="center-panel">
+                <div class="timeline-area">
+                    <div class="timeline-header">
+                        <span class="section-label">⏱ Timeline</span>
+                        <button id="btn-add-event" class="btn small primary">＋ Event</button>
+                    </div>
+                    <div class="timeline-track" id="timeline-track">
+                        <div class="empty-state">Events appear here</div>
+                    </div>
+                </div>
+                <!-- RESIZABLE SPLITTER -->
+                <div id="center-splitter" class="splitter-handle" title="Drag to resize"></div>
+                <!-- PALETTE (gets most space) -->
+                <div class="palette-area">
+                    <div class="palette-header">
+                        <span class="section-label">🎖 Asset Palette</span>
+                        <input type="text" id="unit-search" placeholder="Search... (Ctrl+P)" class="palette-search">
+                    </div>
+                    <div class="unit-palette" id="unit-palette">
+                        <div class="empty-state">Load metadata</div>
+                    </div>
+                </div>
+            </main>
+
+            <!-- RIGHT: Inspector -->
+            <aside class="right-panel">
+                <div class="panel">
+                    <div class="panel-header"><span>🔍 Inspector</span></div>
+                    <div class="panel-content" id="property-inspector">
+                        <div class="empty-state">Select an item</div>
+                    </div>
+                </div>
+            </aside>
+        </div>
+
+        <!-- BOTTOM: Logs -->
+        <footer class="bottom-panel">
+            <div class="panel-header">
+                <span>📊 Logs</span>
+                <button id="btn-clear-logs" class="btn small" style="margin-left:auto">Clear</button>
+            </div>
+            <div class="panel-content" id="log-container" style="padding:0;overflow-y:auto"></div>
+        </footer>
+    </div>
+
+    <!-- Hidden Inputs -->
+    <input type="file" id="file-input-level" accept=".json" style="display:none">
+    <input type="file" id="file-input-metadata" accept=".json" style="display:none">
+    <input type="file" id="file-input-asset-resources" accept=".asset,.json" multiple webkitdirectory style="display:none">
+
+    <!-- Context Menu -->
+    <div id="context-menu" class="context-menu" style="display:none"></div>
+
+    <script src="engine.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
