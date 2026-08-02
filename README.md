@@ -1,11 +1,11 @@
 # Local Data Folder
 
-Đặt các file sau vào đây để tool tự load khi mở:
+Place the following files in this folder so the tool can automatically load them on startup:
 
 ## metadata.json
-- Tool tự tạo sau khi Build metadata
-- Hoặc export từ nút 💾 Save Metadata
+- Automatically generated after building metadata.
+- Or export it using the 💾 **Save Metadata** button.
 
-## AssetResources.asset  
-- Copy từ: ExportedProject/Assets/Resources/AssetResources.asset
-- Tool sẽ tự detect và build metadata nếu chưa có metadata.json
+## AssetResources.asset
+- Copy from: `ExportedProject/Assets/Resources/AssetResources.asset`
+- The tool will automatically detect this file and build `metadata.json` if it doesn't already exist.
