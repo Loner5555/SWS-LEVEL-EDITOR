@@ -154,7 +154,13 @@ const App = {
         const checks = ['Giant', 'ArchisCampaign', 'Archis', 'Crawler', 'KaiRider', 'Eclipsor', 'Medusa', 'Swordwrath'];
         checks.forEach(name => {
             const results = MetadataDB.search(name);
-            const match = results.find(e => e.InternalName === name || e.DisplayName === name || e.DisplayName === MetadataDB._splitCamelCase(name));
+            const camelName = MetadataDB._splitCamelCase(name);
+            const nameLow = name.toLowerCase();
+            const match = results.find(e => {
+                const iName = (e.InternalName||'').toLowerCase();
+                const dName = (e.DisplayName||'').toLowerCase();
+                return iName === nameLow || dName === nameLow || dName === camelName.toLowerCase() || iName.replace(/[\s_]/g,'') === nameLow;
+            });
             const row = this._el('div', {style: 'display:flex;justify-content:space-between;padding:2px 0;font-size:11px'});
             if (match) {
                 row.innerHTML = `<span>${name}</span><span style="color:var(--status-success)">✅ ${match.Category} (${match.Id.slice(0,8)}…)</span>`;
@@ -442,7 +448,7 @@ const App = {
             const tt=Schema.getEventTriggerTime(evt);const tl=tt>=0?`${tt.toFixed(0)}s`:'⚡';
             let detail='';if(ft===0&&acts[0].SpawnUnits){const u=acts[0].SpawnUnits.Units?.Array||[];detail=u.map(x=>`${x.Number||1}×${MetadataDB.resolveWithFallback(x.AssetRefSlottableSpec?.Id?.Value||0)}`).join(', ');}else{detail=ai?ai.label:'Event';}
             card.innerHTML=`<div class="event-type-badge">${tl}</div><div class="event-summary">${detail}</div><div class="event-time">${acts.length>1?acts.length+' actions':''}</div>`;
-            card.onclick=()=>{this.selectedEventIdx=i;this.selectedActionIdx=-1;this.selectedTriggerIdx=-1;this.inspectEventOverview(i);this.renderTimeline();this.renderHierarchy();};
+            card.onclick=()=>{this.selectedEventIdx=i;this.selectedActionIdx=-1;this.selectedTriggerIdx=-1;this.selectedTeamSide=null;this.selectedTeamIdx=-1;this.inspectEventOverview(i);this.renderTimeline();this.renderHierarchy();};
             card.oncontextmenu=e=>{e.preventDefault();this.showEventContextMenu(e,i);};
             track.appendChild(card);
         });
@@ -508,13 +514,46 @@ const App = {
     addAssetToSelectedAction(entry) {
         if(this.selectedEventIdx<0){this.log('Select an event first','warning');return;}
         const evt=LevelParser.getEvents()[this.selectedEventIdx];
-        const acts=evt?.Actions?.Array||[];
-        let si=this.selectedActionIdx>=0&&acts[this.selectedActionIdx]?.ActionType===0?this.selectedActionIdx:acts.findIndex(a=>a.ActionType===0);
-        if(si<0){acts.push(Schema.createBlankAction(0));si=acts.length-1;}
-        LevelParser.addSpawnUnit(this.selectedEventIdx,si,Schema.createBlankSpawnUnit(String(entry.Id)));
-        this.log(`+ ${entry.DisplayName}`,'info');
-        if(this.selectedActionIdx>=0)this.inspectAction(this.selectedEventIdx,this.selectedActionIdx);
-        else this.inspectAction(this.selectedEventIdx,si);
+        if(!evt.Actions)evt.Actions={Array:[]};
+        const acts=evt.Actions.Array;
+        const cat=(entry.Category||'').toLowerCase();
+        LevelParser._pushUndo();
+
+        // Category-aware: different categories create different action types
+        if(cat==='general') {
+            // Create or find SpawnGeneral action (type 1)
+            let si=acts.findIndex(a=>a.ActionType===1);
+            if(si<0){acts.push(Schema.createBlankAction(1));si=acts.length-1;}
+            LevelParser.set(`Settings.Events.Array.${this.selectedEventIdx}.Actions.Array.${si}.SpawnGeneral.AssetRefSlottableSpec.Id.Value`,String(entry.Id));
+            this.log(`👑 General: ${entry.DisplayName}`,'info');
+            this.inspectAction(this.selectedEventIdx,si);
+        } else if(cat==='spell') {
+            this.log(`✨ ${entry.DisplayName} is a Spell — Spells are configured on Teams, not spawned via events. Use the Team inspector to assign spells.`,'info');
+            return;
+        } else if(cat==='research'||cat==='tech') {
+            // Create GiveResearch action (type 21)
+            const newAct=Schema.createBlankAction(21);
+            newAct.GiveResearch.AssetRefSlottableSpec.Id.Value=String(entry.Id);
+            acts.push(newAct);
+            this.log(`🔬 Research: ${entry.DisplayName}`,'info');
+            this.inspectAction(this.selectedEventIdx,acts.length-1);
+        } else if(cat==='upgradebuilding') {
+            // Create GiveUpgradeBuilding action (type 39)
+            const newAct=Schema.createBlankAction(39);
+            newAct.GiveUpgradeBuilding.AssetRefUpgradeBuildingSpec.Id.Value=String(entry.Id);
+            acts.push(newAct);
+            this.log(`🏗 Upgrade: ${entry.DisplayName}`,'info');
+            this.inspectAction(this.selectedEventIdx,acts.length-1);
+        } else {
+            // Default: Unit/Slottable → SpawnUnits (type 0)
+            let si=this.selectedActionIdx>=0&&acts[this.selectedActionIdx]?.ActionType===0?this.selectedActionIdx:acts.findIndex(a=>a.ActionType===0);
+            if(si<0){acts.push(Schema.createBlankAction(0));si=acts.length-1;}
+            LevelParser.addSpawnUnit(this.selectedEventIdx,si,Schema.createBlankSpawnUnit(String(entry.Id)));
+            this.log(`⚔ ${entry.DisplayName}`,'info');
+            if(this.selectedActionIdx>=0)this.inspectAction(this.selectedEventIdx,this.selectedActionIdx);
+            else this.inspectAction(this.selectedEventIdx,si);
+        }
+        LevelParser._dirty=true;
         this.renderTimeline();this.renderHierarchy();
     },
 
@@ -531,6 +570,8 @@ const App = {
 
     // ─── TEAM ───
     inspectTeam(side,i) {
+        this.selectedEventIdx=-1;this.selectedActionIdx=-1;this.selectedTriggerIdx=-1;
+        this.selectedTeamSide=side;this.selectedTeamIdx=i;
         const ins=document.querySelector('#property-inspector');ins.innerHTML='';
         const teams=side==='left'?LevelParser.getLeftTeams():LevelParser.getRightTeams();
         const team=teams[i];if(!team)return;
@@ -619,11 +660,11 @@ const App = {
         // [+ Add Action ▾]
         const addActWrap=this._el('div',{style:'position:relative'});
         const addAct=this._el('button',{class:'btn-add-inline primary'});addAct.textContent='＋ Add Action ▾';
-        addAct.onclick=()=>{const existing=addActWrap.querySelector('.action-dropdown');if(existing){existing.remove();return;}
+        addAct.onclick=(e)=>{e.stopPropagation();const existing=addActWrap.querySelector('.action-dropdown');if(existing){existing.remove();return;}
             const dd=this._el('div',{class:'action-dropdown'});
-            Object.entries(Schema.ACTION_TYPES).forEach(([k,v])=>{const it=this._el('div',{class:'action-dropdown-item'});it.innerHTML=`<span style="color:${v.color}">●</span> ${v.label}`;it.onclick=()=>{if(!evt.Actions)evt.Actions={Array:[]};evt.Actions.Array.push(Schema.createBlankAction(parseInt(k)));LevelParser._dirty=true;dd.remove();this.inspectEventOverview(ei);this.renderTimeline();this.renderHierarchy();};dd.appendChild(it);});
+            Object.entries(Schema.ACTION_TYPES).forEach(([k,v])=>{const it=this._el('div',{class:'action-dropdown-item'});it.innerHTML=`<span style="color:${v.color}">●</span> ${v.label}`;it.onclick=()=>{LevelParser._pushUndo();if(!evt.Actions)evt.Actions={Array:[]};evt.Actions.Array.push(Schema.createBlankAction(parseInt(k)));LevelParser._dirty=true;dd.remove();this.inspectEventOverview(ei);this.renderTimeline();this.renderHierarchy();this.log(`Added: ${v.label}`,'info');};dd.appendChild(it);});
             // Paste
-            if(this._clipboard?.type==='action'){const paste=this._el('div',{class:'action-dropdown-item',style:'border-top:1px solid var(--border-subtle)'});paste.textContent='📌 Paste Copied Action';paste.onclick=()=>{evt.Actions.Array.push(JSON.parse(JSON.stringify(this._clipboard.data)));LevelParser._dirty=true;dd.remove();this.inspectEventOverview(ei);this.renderTimeline();this.renderHierarchy();};dd.appendChild(paste);}
+            if(this._clipboard?.type==='action'){const paste=this._el('div',{class:'action-dropdown-item',style:'border-top:1px solid var(--border-subtle)'});paste.textContent='📌 Paste Copied Action';paste.onclick=()=>{LevelParser._pushUndo();if(!evt.Actions)evt.Actions={Array:[]};evt.Actions.Array.push(JSON.parse(JSON.stringify(this._clipboard.data)));LevelParser._dirty=true;dd.remove();this.inspectEventOverview(ei);this.renderTimeline();this.renderHierarchy();};dd.appendChild(paste);}
             addActWrap.appendChild(dd);};
         addActWrap.appendChild(addAct);actSec.appendChild(addActWrap);
         ins.appendChild(actSec);
@@ -671,7 +712,7 @@ const App = {
         // ──── SPAWN UNITS (Unity-style) ────
         if(act.ActionType===0) {
             ins.appendChild(this._propSide('Side',data.Side||0,v=>{LevelParser.set(`${dp}.Side`,v);}));
-            ins.appendChild(this._propTeam('Team',data.TeamIndex||0,v=>{LevelParser.set(`${dp}.TeamIndex`,v);}));
+            ins.appendChild(this._propTeam('Team',data.TeamIndex||0,v=>{LevelParser.set(`${dp}.TeamIndex`,v);},data.Side||0));
             ins.appendChild(this._propBool('Always Attacks',data.AlwaysAttacks,v=>{LevelParser.set(`${dp}.AlwaysAttacks`,v);},'Units will attack immediately'));
             ins.appendChild(this._propBool('Hold Position',data.HoldPosition,v=>{LevelParser.set(`${dp}.HoldPosition`,v);},'Units stay at spawn point'));
             const unitsSec=this._el('div',{class:'spawn-units-section'});
@@ -790,7 +831,128 @@ const App = {
         else if(act.ActionType===39) {
             if(data.AssetRefUpgradeBuildingSpec?.Id?.Value!==undefined)ins.appendChild(this._propAssetPicker('Building',String(data.AssetRefUpgradeBuildingSpec.Id.Value),'UpgradeBuilding',v=>{LevelParser.set(`${dp}.AssetRefUpgradeBuildingSpec.Id.Value`,v);this.inspectAction(ei,ai);}));
             ins.appendChild(this._propSide('Side',data.Side||0,v=>LevelParser.set(`${dp}.Side`,v)));
-            this._renderAdvanced(data,dp,ins,['AssetRefUpgradeBuildingSpec','Side']);
+            ins.appendChild(this._propTeam('Team',data.TeamIndex||0,v=>LevelParser.set(`${dp}.TeamIndex`,v),data.Side||0));
+            this._renderAdvanced(data,dp,ins,['AssetRefUpgradeBuildingSpec','Side','TeamIndex']);
+        }
+        // ──── GESTURE ────
+        else if(act.ActionType===4) {
+            ins.appendChild(this._propText('Labeled Unit',data.LabeledUnit||'',v=>LevelParser.set(`${dp}.LabeledUnit`,v)));
+            ins.appendChild(this._propBool('Loop',data.Loop,v=>LevelParser.set(`${dp}.Loop`,v?1:0)));
+            if(data.Delay?.RawValue!==undefined)ins.appendChild(this._propFP('Delay',data.Delay.RawValue,v=>LevelParser.set(`${dp}.Delay.RawValue`,Schema.realToFp(v))));
+            this._renderAdvanced(data,dp,ins,['LabeledUnit','Loop','Delay','GestureAnimationSpec']);
+        }
+        // ──── UNIT AI COMMAND ────
+        else if(act.ActionType===6) {
+            ins.appendChild(this._propSelect('Command Type',data.Type||0,[{value:0,label:'Move To'},{value:1,label:'Attack'},{value:2,label:'Patrol'},{value:3,label:'Stop'},{value:4,label:'Face Direction'}],v=>LevelParser.set(`${dp}.Type`,v)));
+            ins.appendChild(this._propText('Labeled Unit',data.LabeledUnit||'',v=>LevelParser.set(`${dp}.LabeledUnit`,v)));
+            ins.appendChild(this._propText('Target Unit',data.LabeledUnitTarget||'',v=>LevelParser.set(`${dp}.LabeledUnitTarget`,v)));
+            if(data.Position){ins.appendChild(this._propFP('Pos X',data.Position.X?.RawValue||0,v=>LevelParser.set(`${dp}.Position.X.RawValue`,Schema.realToFp(v))));ins.appendChild(this._propFP('Pos Y',data.Position.Y?.RawValue||0,v=>LevelParser.set(`${dp}.Position.Y.RawValue`,Schema.realToFp(v))));}
+            ins.appendChild(this._propBool('Ignore Bounds',data.IgnoreWorldBounds,v=>LevelParser.set(`${dp}.IgnoreWorldBounds`,v?1:0)));
+            this._renderAdvanced(data,dp,ins,['Type','LabeledUnit','LabeledUnitTarget','Position','IgnoreWorldBounds','DirectionToFace']);
+        }
+        // ──── SET REGISTER ────
+        else if(act.ActionType===9) {
+            ins.appendChild(this._propText('Register',data.Register||'',v=>LevelParser.set(`${dp}.Register`,v)));
+            ins.appendChild(this._propNumber('Index',data.RegisterIndex||0,v=>LevelParser.set(`${dp}.RegisterIndex`,v)));
+            ins.appendChild(this._propNumber('Value',data.ValueToSet||0,v=>LevelParser.set(`${dp}.ValueToSet`,v)));
+            this._renderAdvanced(data,dp,ins,['Register','RegisterIndex','ValueToSet']);
+        }
+        // ──── SPAWN ENTITY PROTOTYPE ────
+        else if(act.ActionType===12) {
+            if(data.AssetRefEntityPrototype?.Id?.Value!==undefined)ins.appendChild(this._propAssetRef('Entity',String(data.AssetRefEntityPrototype.Id.Value),`${dp}.AssetRefEntityPrototype.Id.Value`));
+            ins.appendChild(this._propSide('Side',data.SideToPlaceOn||0,v=>LevelParser.set(`${dp}.SideToPlaceOn`,v)));
+            ins.appendChild(this._propTeam('Team',data.TeamIndexToPlaceOn||0,v=>LevelParser.set(`${dp}.TeamIndexToPlaceOn`,v),data.SideToPlaceOn||0));
+            ins.appendChild(this._propBool('Place at Position',data.ShouldPlaceAtPosition,v=>LevelParser.set(`${dp}.ShouldPlaceAtPosition`,v?1:0)));
+            if(data.PositionToPlaceAt){ins.appendChild(this._propFP('Pos X',data.PositionToPlaceAt.X?.RawValue||0,v=>LevelParser.set(`${dp}.PositionToPlaceAt.X.RawValue`,Schema.realToFp(v))));ins.appendChild(this._propFP('Pos Y',data.PositionToPlaceAt.Y?.RawValue||0,v=>LevelParser.set(`${dp}.PositionToPlaceAt.Y.RawValue`,Schema.realToFp(v))));}
+            this._renderAdvanced(data,dp,ins,['AssetRefEntityPrototype','SideToPlaceOn','TeamIndexToPlaceOn','ShouldPlaceAtPosition','PositionToPlaceAt','ShouldPlaceOnTeam','SlottableSpecRefToLoadAtlasFrom']);
+        }
+        // ──── GAME OBJECTIVE ────
+        else if(act.ActionType===13) {
+            this.renderGenericProps(data,dp,ins,'🎯 Objective');
+        }
+        // ──── LABEL UNIT ────
+        else if(act.ActionType===11) {
+            ins.appendChild(this._propText('Label',data.Label||'',v=>LevelParser.set(`${dp}.Label`,v)));
+            this._renderAdvanced(data,dp,ins,['Label']);
+        }
+        // ──── REMOVE ENTITY ────
+        else if(act.ActionType===28) {
+            ins.appendChild(this._propText('Label',data.Label||'',v=>LevelParser.set(`${dp}.Label`,v)));
+            this._renderAdvanced(data,dp,ins,['Label']);
+        }
+        // ──── PLAY SOUND ────
+        else if(act.ActionType===29) {
+            ins.appendChild(this._propSelect('Action',data.PlayFmodEventAction||0,[{value:0,label:'Play'},{value:1,label:'Stop'}],v=>LevelParser.set(`${dp}.PlayFmodEventAction`,v)));
+            if(data.FmodSfx)ins.appendChild(this._propText('Sound Event',data.FmodSfx.EventLabel||'',v=>LevelParser.set(`${dp}.FmodSfx.EventLabel`,v)));
+            ins.appendChild(this._propText('Label',data.Label||'',v=>LevelParser.set(`${dp}.Label`,v)));
+            this._renderAdvanced(data,dp,ins,['PlayFmodEventAction','FmodSfx','Label']);
+        }
+        // ──── TOGGLE MUSIC ────
+        else if(act.ActionType===31) {
+            ins.appendChild(this._propBool('Should Play',data.ShouldPlay,v=>LevelParser.set(`${dp}.ShouldPlay`,v?1:0)));
+            this._renderAdvanced(data,dp,ins,['ShouldPlay']);
+        }
+        // ──── TOGGLE NOTIFICATIONS ────
+        else if(act.ActionType===18) {
+            ins.appendChild(this._propBool('Enabled',data.IsEnabled,v=>LevelParser.set(`${dp}.IsEnabled`,v?1:0)));
+            this._renderAdvanced(data,dp,ins,['IsEnabled']);
+        }
+        // ──── KEEP UNIT ALIVE ────
+        else if(act.ActionType===24) {
+            ins.appendChild(this._propText('Label',data.Label||'',v=>LevelParser.set(`${dp}.Label`,v)));
+            ins.appendChild(this._propBool('Keep Alive',data.ShouldKeepAlive,v=>LevelParser.set(`${dp}.ShouldKeepAlive`,v?1:0)));
+            this._renderAdvanced(data,dp,ins,['Label','ShouldKeepAlive']);
+        }
+        // ──── KEEP UNIT SELECTED ────
+        else if(act.ActionType===23) {
+            ins.appendChild(this._propSide('Side',data.Side||0,v=>LevelParser.set(`${dp}.Side`,v)));
+            ins.appendChild(this._propTeam('Team',data.TeamIndex||0,v=>LevelParser.set(`${dp}.TeamIndex`,v),data.Side||0));
+            ins.appendChild(this._propText('Label',data.Label||'',v=>LevelParser.set(`${dp}.Label`,v)));
+            this._renderAdvanced(data,dp,ins,['Side','TeamIndex','Label']);
+        }
+        // ──── SET CAPTURE POINT ────
+        else if(act.ActionType===15) {
+            ins.appendChild(this._propBool('Enabled',data.isCapturePointEnabled,v=>LevelParser.set(`${dp}.isCapturePointEnabled`,v?1:0)));
+            this._renderAdvanced(data,dp,ins,['isCapturePointEnabled']);
+        }
+        // ──── CLEAR STAGE ────
+        else if(act.ActionType===27) {
+            ins.appendChild(this._propSelect('Clear Type',data.ClearStateType||0,[{value:0,label:'All'},{value:1,label:'Dead Only'},{value:2,label:'Alive Only'}],v=>LevelParser.set(`${dp}.ClearStateType`,v)));
+            ins.appendChild(this._propSelect('Team Type',data.ClearTeamType||0,[{value:0,label:'All Teams'},{value:1,label:'Left Only'},{value:2,label:'Right Only'}],v=>LevelParser.set(`${dp}.ClearTeamType`,v)));
+            this._renderAdvanced(data,dp,ins,['ClearStateType','ClearTeamType']);
+        }
+        // ──── REMOVE STATUE ────
+        else if(act.ActionType===37) {
+            ins.appendChild(this._propSide('Side',data.Side||0,v=>LevelParser.set(`${dp}.Side`,v)));
+            ins.appendChild(this._propBool('Disable Building',data.DisableBuildingUnits,v=>LevelParser.set(`${dp}.DisableBuildingUnits`,v?1:0)));
+            ins.appendChild(this._propBool('Disable Castle Archidon',data.DisableCastleArchidon,v=>LevelParser.set(`${dp}.DisableCastleArchidon`,v?1:0)));
+            this._renderAdvanced(data,dp,ins,['Side','DisableBuildingUnits','DisableCastleArchidon']);
+        }
+        // ──── RANGED OVERRIDE ────
+        else if(act.ActionType===32) {
+            ins.appendChild(this._propSide('Side',data.Side||0,v=>LevelParser.set(`${dp}.Side`,v)));
+            ins.appendChild(this._propTeam('Team',data.TeamIndex||0,v=>LevelParser.set(`${dp}.TeamIndex`,v),data.Side||0));
+            ins.appendChild(this._propText('Label',data.Label||'',v=>LevelParser.set(`${dp}.Label`,v)));
+            ins.appendChild(this._propBool('Override',data.HasOverride,v=>LevelParser.set(`${dp}.HasOverride`,v?1:0)));
+            this._renderAdvanced(data,dp,ins,['Side','TeamIndex','Label','HasOverride']);
+        }
+        // ──── LOAD SCENE ────
+        else if(act.ActionType===33) {
+            ins.appendChild(this._propText('Scene Name',data.SceneName||'',v=>LevelParser.set(`${dp}.SceneName`,v)));
+            ins.appendChild(this._propSelect('Action',data.LoadSceneAction||0,[{value:0,label:'Load'},{value:1,label:'Unload'}],v=>LevelParser.set(`${dp}.LoadSceneAction`,v)));
+            this._renderAdvanced(data,dp,ins,['SceneName','LoadSceneAction']);
+        }
+        // ──── USER COMMANDS ────
+        else if(act.ActionType===25) {
+            ins.appendChild(this._propBool('Select/Deselect',data.isUserSelectDeselectAvailable,v=>LevelParser.set(`${dp}.isUserSelectDeselectAvailable`,v?1:0)));
+            ins.appendChild(this._propBool('User Control',data.isUserControlAvailable,v=>LevelParser.set(`${dp}.isUserControlAvailable`,v?1:0)));
+            this._renderAdvanced(data,dp,ins,['isUserSelectDeselectAvailable','isUserControlAvailable']);
+        }
+        // ──── STATE MACHINE ────
+        else if(act.ActionType===22) {
+            ins.appendChild(this._propText('State',data.State||'',v=>LevelParser.set(`${dp}.State`,v)));
+            ins.appendChild(this._propNumber('State Index',data.StateIndex||0,v=>LevelParser.set(`${dp}.StateIndex`,v)));
+            this._renderAdvanced(data,dp,ins,['State','StateIndex']);
         }
         // ──── ALL OTHERS — Full generic ────
         else {
@@ -829,10 +991,34 @@ const App = {
                 const addBtn=this._el('button',{class:'btn-add-inline',textContent:'＋ Add Item',style:'padding:2px 6px'});
                 addBtn.onclick=e=>{
                     e.stopPropagation();
-                    let newItem={};
-                    if(val.Array.length>0)newItem=JSON.parse(JSON.stringify(val.Array[val.Array.length-1]));
-                    else if(key==='Customizations'||key==='Techs'||key==='Loadout')newItem={Id:{Value:"0"}};
-                    val.Array.push(newItem);LevelParser._dirty=true;this.refreshInspector();
+                    LevelParser._pushUndo();
+                    const assetRefKeys=['Customizations','Techs','Loadout','AiBuildTargets','BuildArmyDatas','Spells','UnitsToSpawn','Units'];
+                    if(assetRefKeys.includes(key)) {
+                        // Open asset picker for asset-reference arrays
+                        const catMap={Customizations:null,Techs:'Tech',Loadout:'Unit',AiBuildTargets:'Unit',BuildArmyDatas:'Unit',Spells:'Spell',UnitsToSpawn:'Unit',Units:'Unit'};
+                        const pickerCat=catMap[key];
+                        if(pickerCat) {
+                            this.openAssetPicker(pickerCat, entry=>{
+                                if (key==='UnitsToSpawn' || key==='Units') {
+                                    val.Array.push(Schema.createBlankSpawnUnit(String(entry.Id)));
+                                } else {
+                                    val.Array.push({Id:{Value:String(entry.Id)}});
+                                }
+                                LevelParser._dirty=true;this.refreshInspector();
+                                this.log(`+ ${entry.DisplayName} → ${key}`,'info');
+                            });
+                        } else {
+                            val.Array.push({Id:{Value:"0"}});
+                            LevelParser._dirty=true;this.refreshInspector();
+                        }
+                    } else if(val.Array.length>0) {
+                        val.Array.push(JSON.parse(JSON.stringify(val.Array[val.Array.length-1])));
+                        LevelParser._dirty=true;this.refreshInspector();
+                    } else {
+                        const isScalar = key.includes('Difficulties') || key.includes('Slots');
+                        val.Array.push(isScalar ? 0 : {});
+                        LevelParser._dirty=true;this.refreshInspector();
+                    }
                 };
                 h.appendChild(lbl);h.appendChild(addBtn);
                 const c=this._el('div',{style:'display:none;padding-left:8px;border-left:2px solid var(--border-subtle)'});
@@ -881,10 +1067,19 @@ const App = {
     showRefExplorer(entry) {
         const ins=document.querySelector('#property-inspector');ins.innerHTML='';
         ins.appendChild(this._el('div',{class:'inspector-header',innerHTML:`<span class="inspector-title">${this._getCatIcon(entry.Category)} ${entry.DisplayName||'?'}</span>`}));
-        [['ID',entry.Id],['Category',entry.Category],['Path',entry.Path||entry.InternalPath],['Source',entry.Source]].forEach(([l,v])=>{if(v)ins.appendChild(this._propRow(l,this._el('span',{style:'font-size:11px;word-break:break-all',textContent:String(v)})));});
-        if(entry.Description)ins.appendChild(this._propRow('Desc',this._el('span',{style:'font-size:11px',textContent:entry.Description})));
+        // Main info
+        ins.appendChild(this._propRow('Category',this._el('span',{style:'font-size:12px;font-weight:500',textContent:entry.Category||'Unknown'})));
+        if(entry.Description)ins.appendChild(this._propRow('Description',this._el('span',{style:'font-size:11px',textContent:entry.Description})));
         if(entry.Cost)ins.appendChild(this._propRow('Cost',this._el('span',{textContent:`${entry.Cost.Gold||entry.Cost.gold||0}G ${entry.Cost.Mana||entry.Cost.mana||0}M ${entry.Cost.Population||entry.Cost.population||0}P`})));
+        // References in level
         if(LevelParser.isLoaded()&&entry.Id){const refs=this._findRefs(String(entry.Id));const sec=this._el('div',{class:'inspector-section'});sec.appendChild(this._el('div',{class:'inspector-section-title',textContent:`📎 References (${refs.length})`}));if(!refs.length)sec.appendChild(this._el('div',{style:'padding:8px;color:var(--text-muted)',textContent:'Not used in current level'}));else refs.forEach(r=>sec.appendChild(this._el('div',{style:'padding:4px 8px;font-size:11px;color:var(--accent-primary)',textContent:r})));ins.appendChild(sec);}
+        // Technical details (collapsed)
+        const techSec=this._el('div',{class:'advanced-section'});
+        const techH=this._el('div',{class:'advanced-header',textContent:'▶ Technical Details'});
+        const techC=this._el('div',{style:'display:none;padding:4px 8px'});
+        techH.onclick=()=>{const o=techC.style.display!=='none';techC.style.display=o?'none':'block';techH.textContent=(o?'▶':'▼')+' Technical Details';};
+        [['ID',entry.Id],['Internal Name',entry.InternalName],['Path',entry.Path||entry.InternalPath],['Source',entry.Source]].forEach(([l,v])=>{if(v){const r=this._el('div',{style:'display:flex;justify-content:space-between;padding:2px 0;font-size:11px'});r.innerHTML=`<span style="color:var(--text-muted)">${l}</span><span style="word-break:break-all">${String(v)}</span>`;techC.appendChild(r);}});
+        techSec.appendChild(techH);techSec.appendChild(techC);ins.appendChild(techSec);
     },
     _findRefs(id){const refs=[];if(!LevelParser.isLoaded())return refs;LevelParser.getEvents().forEach((evt,i)=>{if(JSON.stringify(evt).includes(id))refs.push(`Event ${i}: ${Schema.getEventSummary(evt)}`);});['LeftTeams','RightTeams'].forEach(key=>{(LevelParser.getData().Settings[key]?.Array||[]).forEach((t,ti)=>{if(JSON.stringify(t).includes(id))refs.push(`${key}[${ti}]: ${t.TeamName||'Team '+ti}`);});});return refs;},
 
@@ -965,10 +1160,15 @@ const App = {
     _propSelect(l,v,opts,fn){const s=this._el('select');opts.forEach(o=>{const opt=this._el('option',{value:o.value});opt.textContent=o.label;if(String(o.value)===String(v))opt.selected=true;s.appendChild(opt);});s.onchange=()=>fn(parseInt(s.value));return this._propRow(l,s);},
     // ─── SMART ENUM HELPERS ───
     _propSide(l,v,fn){return this._propSelect(l,v,[{value:0,label:'← Left Team'},{value:1,label:'Right Team →'}],fn);},
-    _propTeam(l,v,fn){return this._propSelect(l,v,[{value:0,label:'Team 0'},{value:1,label:'Team 1'},{value:2,label:'Team 2'},{value:3,label:'Team 3'}],fn);},
+    _propTeam(l,v,fn,side){const teams=LevelParser.isLoaded()?(side===1?LevelParser.getRightTeams():LevelParser.getLeftTeams()):[];const opts=[];for(let i=0;i<Math.max(4,teams.length);i++){const tn=teams[i]?.TeamName;opts.push({value:i,label:tn?`Team ${i} (${tn})`:`Team ${i}`});}return this._propSelect(l,v,opts,fn);},
     _propBool(l,v,fn,tooltip){const r=this._el('div',{class:'property-row'});const lb=this._el('div',{class:'property-label',title:tooltip||l});lb.textContent=this._humanize(l);const vd=this._el('div',{class:'property-value',style:'display:flex;align-items:center;gap:8px'});const cb=this._el('input',{type:'checkbox'});cb.checked=!!(v&&v!=='0'&&v!==0);const lbl=this._el('span',{style:'font-size:11px;color:var(--text-muted)'});lbl.textContent=cb.checked?'Yes':'No';cb.onchange=()=>{lbl.textContent=cb.checked?'Yes':'No';fn(cb.checked?1:0);};vd.appendChild(cb);vd.appendChild(lbl);r.appendChild(lb);r.appendChild(vd);return r;},
     _propDifficulties(l,arr,fn){const r=this._el('div',{class:'property-row'});const lb=this._el('div',{class:'property-label'});lb.textContent=this._humanize(l);const vd=this._el('div',{class:'property-value',style:'display:flex;gap:4px;flex-wrap:wrap'});[{v:0,n:'Normal'},{v:1,n:'Hard'},{v:2,n:'Insane'}].forEach(d=>{const b=this._el('button',{class:'spawn-btn',style:'width:auto;padding:2px 8px;font-size:11px'});b.textContent=d.n;const on=(arr||[]).includes(d.v);if(on){b.style.background='var(--accent-primary)';b.style.color='white';}b.onclick=()=>{const nv=on?arr.filter(x=>x!==d.v):[...(arr||[]),d.v].sort();fn(nv);this.refreshInspector();};vd.appendChild(b);});r.appendChild(lb);r.appendChild(vd);return r;},
-    refreshInspector(){if(this.selectedActionIdx>=0)this.inspectAction(this.selectedEventIdx,this.selectedActionIdx);else if(this.selectedEventIdx>=0)this.inspectEventOverview(this.selectedEventIdx);this.renderTimeline();this.renderHierarchy();},
+    refreshInspector(){
+        if(this.selectedActionIdx>=0) this.inspectAction(this.selectedEventIdx,this.selectedActionIdx);
+        else if(this.selectedEventIdx>=0) this.inspectEventOverview(this.selectedEventIdx);
+        else if(this.selectedTeamSide && this.selectedTeamIdx>=0) this.inspectTeam(this.selectedTeamSide, this.selectedTeamIdx);
+        this.renderTimeline();this.renderHierarchy();
+    },
     _propAssetRef(l,id,path){const name=MetadataDB.resolveWithFallback(id);const w=this._el('div',{style:'display:flex;gap:4px;align-items:center;width:100%'});const sp=this._el('span',{style:'flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;font-weight:500',title:`ID: ${id}`});sp.textContent=name;if(name.startsWith('Unknown')){sp.style.color='var(--status-warning)';const rb=this._el('button',{class:'spawn-btn',textContent:'🔍',title:'Resolve'});rb.onclick=()=>{const e=MetadataDB.getEntry(id);if(e){sp.textContent=e.DisplayName;sp.style.color='';}else this.log(`ID ${id} not in metadata`,'warning');};w.appendChild(sp);w.appendChild(rb);}else{sp.onclick=()=>{const e=MetadataDB.getEntry(id);if(e)this.showRefExplorer(e);};w.appendChild(sp);}return this._propRow(this._humanize(l),w);},
     // Asset picker row: shows name + [Change] button that opens picker
     _propAssetPicker(label,id,category,onChange){const name=MetadataDB.resolveWithFallback(id);const w=this._el('div',{style:'display:flex;gap:4px;align-items:center;width:100%'});const sp=this._el('span',{style:'flex:1;font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'});sp.textContent=name;w.appendChild(sp);const btn=this._el('button',{class:'spawn-btn',textContent:'⟳',title:`Change ${category}`});btn.onclick=()=>this.openAssetPicker(category,entry=>{onChange(String(entry.Id));sp.textContent=entry.DisplayName;});w.appendChild(btn);return this._propRow(label,w);},
