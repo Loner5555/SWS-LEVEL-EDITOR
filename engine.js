@@ -353,7 +353,8 @@ window.YAMLParser = {
       name: '',
       description: '',
       cost: { gold: 0, mana: 0, population: 0 },
-      isBuildableUnit: 0
+      isBuildableUnit: 0,
+      slotType: -1
     };
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
@@ -366,6 +367,7 @@ window.YAMLParser = {
       if (line.startsWith('Mana:')) result.cost.mana = parseInt(line.substring(5).trim()) || 0;
       if (line.startsWith('Population:')) result.cost.population = parseInt(line.substring(11).trim()) || 0;
       if (line.startsWith('IsBuildableUnit:')) result.isBuildableUnit = parseInt(line.substring(16).trim()) || 0;
+      if (line.startsWith('slotType:')) result.slotType = parseInt(line.substring(9).trim());
     }
     return result;
   },
@@ -379,7 +381,8 @@ window.YAMLParser = {
       name: '',
       title: '',
       description: '',
-      isBuildableUnit: undefined
+      isBuildableUnit: undefined,
+      slotType: -1
     };
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
@@ -390,6 +393,7 @@ window.YAMLParser = {
       if (line.startsWith('Title:') && !result.title) result.title = line.substring(6).trim();
       if (line.startsWith('Description:')) result.description = line.substring(12).trim();
       if (line.startsWith('IsBuildableUnit:')) result.isBuildableUnit = parseInt(line.substring(16).trim()) || 0;
+      if (line.startsWith('slotType:')) result.slotType = parseInt(line.substring(9).trim());
     }
     return result;
   }
@@ -517,6 +521,7 @@ window.MetadataDB = {
     if (p.includes('/slottables/difficulty/')) return 'Difficulty';
     if (p.includes('/slottables/hidden/')) return 'Hidden';
     if (p.includes('/slottables/views/')) return 'SlottableView';
+    if (p.includes('/levels/') || p.includes('/cutscenes/')) return 'Level';
     if (p.includes('/slottables/campaign/')) return 'Unit';
     if (p.includes('/slottables/')) return 'Slottable';
     // Other game DB paths
@@ -526,9 +531,9 @@ window.MetadataDB = {
     if (p.includes('/statues/')) return 'Statue';
     if (p.includes('/walls/')) return 'Wall';
     if (p.includes('/backdrop/')) return 'BackDrop';
-    if (p.includes('/banner/')) return 'Banner';
+    if (p.includes('/banners/') || p.includes('/banner/')) return 'Banner';
+    if (p.includes('/profilepics/') || p.includes('/profilepic/')) return 'ProfilePic';
     if (p.includes('/skin/') || p.includes('/skins/')) return 'Skin';
-    if (p.includes('/profilepic/')) return 'ProfilePic';
     if (p.includes('/music/')) return 'Music';
     if (p.includes('/video/')) return 'Video';
     // Technical / runtime
@@ -643,12 +648,19 @@ window.MetadataDB = {
     // Merge other fields (don't overwrite with empty)
     if (newData.Description && !existing.Description) existing.Description = newData.Description;
     if (newData.IsBuildableUnit !== undefined) existing.IsBuildableUnit = newData.IsBuildableUnit;
+    if (newData.SlotType !== undefined && newData.SlotType >= 0) existing.SlotType = newData.SlotType;
     if (newData.InternalName && !existing.InternalName) existing.InternalName = newData.InternalName;
     if (newData.Path && !existing.Path) existing.Path = newData.Path;
     if (newData.Address && !existing.Address) existing.Address = newData.Address;
 
-    // Upgrade Slottable category to Unit if IsBuildableUnit
-    if (existing.Category === 'Slottable' && existing.IsBuildableUnit) existing.Category = 'Unit';
+    // Use SlotType for definitive classification: 5=General, 3=Spell, 0=Unit
+    const SLOT_TYPE_MAP = {0:'Unit', 1:'UpgradeBuilding', 2:'Equipment', 3:'Spell', 4:'Unit', 5:'General'};
+    if (existing.SlotType >= 0 && SLOT_TYPE_MAP[existing.SlotType] &&
+        (existing.Category === 'Slottable' || existing.Category === 'Unit' || existing.Category === 'Unknown')) {
+      existing.Category = SLOT_TYPE_MAP[existing.SlotType];
+    }
+    // Fallback: Upgrade Slottable category to Unit if IsBuildableUnit
+    else if (existing.Category === 'Slottable' && existing.IsBuildableUnit) existing.Category = 'Unit';
 
     // Regenerate keywords
     existing.SearchKeywords = this._generateKeywords(existing);
@@ -782,8 +794,15 @@ window.MetadataDB = {
       else if (fp.includes('/research/')) category = 'Research';
       else if (fp.includes('/tech/')) category = 'Tech';
       else if (fp.includes('/upgradebuildings/')) category = 'UpgradeBuilding';
+      else if (fp.includes('/levels/') || fp.includes('/cutscenes/')) category = 'Level';
       else if (fp.includes('/campaign/')) { category = 'Unit'; priority = 2; }
       else if (data.isBuildableUnit) category = 'Unit';
+
+      // slotType: 0=Unit, 1=Upgrade, 2=Enchantment, 3=Spell, 4=Mythic, 5=General
+      const SLOT_TYPE_MAP = {0:'Unit', 1:'UpgradeBuilding', 2:'Equipment', 3:'Spell', 4:'Unit', 5:'General'};
+      if (category === 'Slottable' && data.slotType >= 0 && SLOT_TYPE_MAP[data.slotType]) {
+        category = SLOT_TYPE_MAP[data.slotType];
+      }
 
       this._mergeEntry(idStr, {
         Id: idStr,
@@ -794,6 +813,7 @@ window.MetadataDB = {
         SourcePriority: priority,
         Description: data.description || '',
         IsBuildableUnit: data.isBuildableUnit,
+        SlotType: data.slotType,
         Path: data.path || filePath || '',
         Cost: data.cost
       });

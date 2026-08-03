@@ -995,7 +995,7 @@ const App = {
                     const assetRefKeys=['Customizations','Techs','Loadout','AiBuildTargets','BuildArmyDatas','Spells','UnitsToSpawn','Units'];
                     if(assetRefKeys.includes(key)) {
                         // Open asset picker for asset-reference arrays
-                        const catMap={Customizations:null,Techs:'Tech',Loadout:'Unit',AiBuildTargets:'Unit',BuildArmyDatas:'Unit',Spells:'Spell',UnitsToSpawn:'Unit',Units:'Unit'};
+                        const catMap={Customizations:'UnitCustomization',Techs:'Tech',Loadout:'Slottable',AiBuildTargets:'Unit',BuildArmyDatas:'Unit',Spells:'Spell',UnitsToSpawn:'Unit',Units:'Unit'};
                         const pickerCat=catMap[key];
                         if(pickerCat) {
                             this.openAssetPicker(pickerCat, entry=>{
@@ -1015,8 +1015,11 @@ const App = {
                         val.Array.push(JSON.parse(JSON.stringify(val.Array[val.Array.length-1])));
                         LevelParser._dirty=true;this.refreshInspector();
                     } else {
-                        const isScalar = key.includes('Difficulties') || key.includes('Slots');
-                        val.Array.push(isScalar ? 0 : {});
+                        const isScalar = key.includes('Difficulties') || key.includes('Slots') || key==='DifficultiesToSpawnOn' || key==='ExtraSlotsForDifficulty' || key==='Samples';
+                        const isCurveKey = key==='Keys';
+                        if(isScalar) val.Array.push(0);
+                        else if(isCurveKey) val.Array.push({Time:{RawValue:0},Value:{RawValue:0},InTangent:{RawValue:0},OutTangent:{RawValue:0}});
+                        else val.Array.push({});
                         LevelParser._dirty=true;this.refreshInspector();
                     }
                 };
@@ -1026,7 +1029,7 @@ const App = {
                 this._renderArr(val.Array,`${fp}.Array`,c,key);g.appendChild(h);g.appendChild(c);rows.push(g);
             }
             else if(typeof val==='object'&&'RawValue'in val&&Object.keys(val).length===1){rows.push(this._propFP(key,val.RawValue,v=>LevelParser.set(`${fp}.RawValue`,Schema.realToFp(v))));}
-            else if(typeof val==='object'&&'Value'in val&&Object.keys(val).length===1){const v=val.Value,vs=String(v);if(v===0||v===1||v==='0'||v==='1')rows.push(this._propCheckbox(key,v,nv=>LevelParser.set(`${fp}.Value`,nv?1:0)));else if(vs.length>10)rows.push(this._propAssetRef(key,vs,`${fp}.Value`));else rows.push(this._propNumber(key,typeof v==='string'?parseInt(v):v,nv=>LevelParser.set(`${fp}.Value`,nv)));}
+            else if(typeof val==='object'&&'Value'in val&&Object.keys(val).length===1){const v=val.Value,vs=String(v);if(key!=='Id'&&(v===0||v===1||v==='0'||v==='1'))rows.push(this._propCheckbox(key,v,nv=>LevelParser.set(`${fp}.Value`,nv?1:0)));else if(vs.length>10||key==='Id')rows.push(this._propAssetRef(key,vs,`${fp}.Value`));else rows.push(this._propNumber(key,typeof v==='string'?parseInt(v):v,nv=>LevelParser.set(`${fp}.Value`,nv)));}
             else if(typeof val==='object'&&val.Id&&typeof val.Id==='object'&&'Value'in val.Id){rows.push(this._propAssetRef(key,String(val.Id.Value),`${fp}.Id.Value`));}
             else if(typeof val==='object'&&val.X?.RawValue!==undefined&&val.Y){rows.push(this._propFP(`${key}.X`,val.X.RawValue,v=>LevelParser.set(`${fp}.X.RawValue`,Schema.realToFp(v))));rows.push(this._propFP(`${key}.Y`,val.Y.RawValue,v=>LevelParser.set(`${fp}.Y.RawValue`,Schema.realToFp(v))));if(val.Z?.RawValue!==undefined)rows.push(this._propFP(`${key}.Z`,val.Z.RawValue,v=>LevelParser.set(`${fp}.Z.RawValue`,Schema.realToFp(v))));}
             else if(typeof val==='object'&&!Array.isArray(val)){const g=this._el('div',{class:'prop-group-nested'});const h=this._el('div',{class:'prop-group-header'});h.textContent=`▶ ${key}`;const c=this._el('div',{style:'display:none;padding-left:8px;border-left:2px solid var(--border-subtle)'});h.onclick=()=>{const o=c.style.display!=='none';c.style.display=o?'none':'block';h.textContent=(o?'▶':'▼')+` ${key}`;};this.renderGenericProps(val,fp,c,null);g.appendChild(h);g.appendChild(c);rows.push(g);}
@@ -1096,6 +1099,10 @@ const App = {
         'AssetRefSlottableSpec':'Unit','AssetRefEntityPrototype':'Entity','AssetRefEntityView':'Entity View',
         'AssetRefResearchSpec':'Research','AssetRefSpellSpec':'Spell','AssetRefUpgradeBuildingSpec':'Building',
         'AssetRefGameTypeSpec':'Game Type','AssetRefBackDropSpec':'Backdrop','AssetRefStatueSpec':'Statue',
+        'AssetRefProfilePicSpec':'Profile Picture','AssetRefAiUpgradeBuildingResearchPlanSpec':'AI Build Plan',
+        'AssetRefStatuePersonalizationSpec':'Statue Skin','AssetRefBannerPersonalizationSpec':'Banner Skin',
+        'AssetRefWallPersonalizationSpec':'Wall Skin','AssetRefMinePositioningSpec':'Mine Positioning',
+        'DefaultCampaignGeneralSpec':'Default General',
         'EventTriggerType':'Trigger Type','ActionType':'Action Type','TeamIndex':'Team','TeamName':'Team Name',
         'DelayBeforeTakingActions':'Delay','GiveSpeechPosition':'Position','LabelToFind':'Label',
         'AllowPlayersLoadoutOverride':'Player Loadout Override','OverrideStatueHealth':'Override Statue HP',
@@ -1104,6 +1111,38 @@ const App = {
         'TeamAiParameters':'AI Parameters','TeamAiLogicParameters':'AI Logic',
         'SpawnUnits':'Spawn Units','SpawnGeneral':'Spawn General','CameraPan':'Camera Pan',
         'GiveSpeech':'Speech','SideWin':'Side Win','RawValue':'Value',
+        'ExtraSlotsForDifficulty':'Extra Slots','DifficultiesToSpawnOn':'Spawn Difficulties',
+        'HasDesperation':'Has Desperation','HasTemporaryStatueProtection':'Temp Statue Protection',
+        'StatueHealthFractionToTriggerAt':'Desperation Trigger HP%',
+    },
+    // Map AssetRef field names to picker categories
+    _ASSETREF_CAT_MAP: {
+        'AssetRefSlottableSpec':'Unit','AssetRefEntityPrototype':'Entity',
+        'AssetRefResearchSpec':'Research','AssetRefSpellSpec':'Spell',
+        'AssetRefUpgradeBuildingSpec':'UpgradeBuilding','AssetRefGameTypeSpec':'GameType',
+        'AssetRefBackDropSpec':'BackDrop','AssetRefStatueSpec':'Statue',
+        'AssetRefProfilePicSpec':'ProfilePic','AssetRefAiUpgradeBuildingResearchPlanSpec':'TechTree',
+        'AssetRefStatuePersonalizationSpec':'Statue','AssetRefBannerPersonalizationSpec':'Banner',
+        'AssetRefWallPersonalizationSpec':'Wall','AssetRefMinePositioningSpec':null,
+        'DefaultCampaignGeneralSpec':'General',
+    },
+    _inferCategoryFromLabel(label) {
+        if(this._ASSETREF_CAT_MAP[label]!==undefined) return this._ASSETREF_CAT_MAP[label];
+        // Infer from AssetRef naming pattern
+        if(label.startsWith('AssetRef')) {
+            const inner = label.replace(/^AssetRef/,'').replace(/Spec$/,'');
+            if(inner.includes('Slottable')) return 'Slottable';
+            if(inner.includes('General')) return 'General';
+            if(inner.includes('Spell')) return 'Spell';
+            if(inner.includes('Research')) return 'Research';
+            if(inner.includes('Statue')) return 'Statue';
+            if(inner.includes('Banner')) return 'Banner';
+            if(inner.includes('Wall')) return 'Wall';
+            if(inner.includes('ProfilePic')) return 'ProfilePic';
+            if(inner.includes('UpgradeBuilding')) return 'UpgradeBuilding';
+        }
+        if(label.includes('General')) return 'General';
+        return null;
     },
     _humanize(key) {
         if (this._LABEL_MAP[key]) return this._LABEL_MAP[key];
@@ -1123,18 +1162,26 @@ const App = {
         }
         modal.style.display = 'flex';
         const title = modal.querySelector('.picker-title');
-        title.textContent = `Select ${category}`;
+        title.textContent = category ? `Select ${category}` : 'Select Asset';
         const search = modal.querySelector('.picker-search');
         const list = modal.querySelector('.picker-list');
         search.value = '';
         search.focus();
         const render = (q) => {
             list.innerHTML = '';
-            const catMap = {Unit:['Unit','Entity'],General:['General'],Spell:['Spell'],Research:['Research','Tech'],Equipment:['Equipment'],Statue:['Statue'],UpgradeBuilding:['UpgradeBuilding'],Backdrop:['BackDrop']};
-            const cats = catMap[category] || [category];
+            const catMap = {Unit:['Unit','Entity'],General:['General'],Spell:['Spell'],Research:['Research','Tech'],Equipment:['Equipment'],Statue:['Statue'],UpgradeBuilding:['UpgradeBuilding'],Backdrop:['BackDrop'],UnitCustomization:['UnitCustomization'],ProfilePic:['ProfilePic'],Banner:['Banner'],Wall:['Wall'],Slottable:['Slottable','Unit','General','Spell'],TechTree:['TechTree'],GameType:['GameType']};
+            const cats = category ? (catMap[category] || [category]) : null;
             let entries = [];
-            cats.forEach(c => { entries = entries.concat(MetadataDB.getByCategory(c)); });
+            if(cats) cats.forEach(c => { entries = entries.concat(MetadataDB.getByCategory(c)); });
             if (category === 'Unit' && typeof MetadataDB.getUnits === 'function') entries = MetadataDB.getUnits();
+            // If no category (null), show ALL non-technical assets
+            if (!category) {
+                entries = [];
+                for(const [id,entry] of MetadataDB._db) {
+                    const techCats = ['Entity','VFX','SFX','Spine','Projectile','Localization','Music','Video','LevelVariant','CapturePoint','Unknown','AITeam','SlottableView'];
+                    if(!techCats.includes(entry.Category)) entries.push(entry);
+                }
+            }
             if (q) { const ql = q.toLowerCase(); entries = entries.filter(e => e.DisplayName && e.DisplayName.toLowerCase().includes(ql)); }
             entries.slice(0, 100).forEach(entry => {
                 const item = this._el('div', {class:'picker-item'});
@@ -1159,8 +1206,19 @@ const App = {
     _propCheckbox(l,v,fn){const i=this._el('input',{type:'checkbox'});i.checked=!!(v&&v!=='0');i.onchange=()=>fn(i.checked);return this._propRow(l,i);},
     _propSelect(l,v,opts,fn){const s=this._el('select');opts.forEach(o=>{const opt=this._el('option',{value:o.value});opt.textContent=o.label;if(String(o.value)===String(v))opt.selected=true;s.appendChild(opt);});s.onchange=()=>fn(parseInt(s.value));return this._propRow(l,s);},
     // ─── SMART ENUM HELPERS ───
-    _propSide(l,v,fn){return this._propSelect(l,v,[{value:0,label:'← Left Team'},{value:1,label:'Right Team →'}],fn);},
-    _propTeam(l,v,fn,side){const teams=LevelParser.isLoaded()?(side===1?LevelParser.getRightTeams():LevelParser.getLeftTeams()):[];const opts=[];for(let i=0;i<Math.max(4,teams.length);i++){const tn=teams[i]?.TeamName;opts.push({value:i,label:tn?`Team ${i} (${tn})`:`Team ${i}`});}return this._propSelect(l,v,opts,fn);},
+    _propSide(l,v,fn){return this._propSelect(l,v,[{value:0,label:'← Left Team'},{value:1,label:'Right Team →'}],(val)=>{fn(val);this.refreshInspector();});},
+    _propTeam(l,v,fn,side){
+        const leftTeams=LevelParser.isLoaded()?LevelParser.getLeftTeams():[];
+        const rightTeams=LevelParser.isLoaded()?LevelParser.getRightTeams():[];
+        const teams=(side===1)?rightTeams:leftTeams;
+        const opts=[];
+        for(let i=0;i<teams.length;i++){
+            const tn=teams[i]?.TeamName;
+            opts.push({value:i,label:tn?`Team ${i} — ${tn}`:`Team ${i}`});
+        }
+        if(!opts.length) for(let i=0;i<4;i++) opts.push({value:i,label:`Team ${i}`});
+        return this._propSelect(l,v,opts,fn);
+    },
     _propBool(l,v,fn,tooltip){const r=this._el('div',{class:'property-row'});const lb=this._el('div',{class:'property-label',title:tooltip||l});lb.textContent=this._humanize(l);const vd=this._el('div',{class:'property-value',style:'display:flex;align-items:center;gap:8px'});const cb=this._el('input',{type:'checkbox'});cb.checked=!!(v&&v!=='0'&&v!==0);const lbl=this._el('span',{style:'font-size:11px;color:var(--text-muted)'});lbl.textContent=cb.checked?'Yes':'No';cb.onchange=()=>{lbl.textContent=cb.checked?'Yes':'No';fn(cb.checked?1:0);};vd.appendChild(cb);vd.appendChild(lbl);r.appendChild(lb);r.appendChild(vd);return r;},
     _propDifficulties(l,arr,fn){const r=this._el('div',{class:'property-row'});const lb=this._el('div',{class:'property-label'});lb.textContent=this._humanize(l);const vd=this._el('div',{class:'property-value',style:'display:flex;gap:4px;flex-wrap:wrap'});[{v:0,n:'Normal'},{v:1,n:'Hard'},{v:2,n:'Insane'}].forEach(d=>{const b=this._el('button',{class:'spawn-btn',style:'width:auto;padding:2px 8px;font-size:11px'});b.textContent=d.n;const on=(arr||[]).includes(d.v);if(on){b.style.background='var(--accent-primary)';b.style.color='white';}b.onclick=()=>{const nv=on?arr.filter(x=>x!==d.v):[...(arr||[]),d.v].sort();fn(nv);this.refreshInspector();};vd.appendChild(b);});r.appendChild(lb);r.appendChild(vd);return r;},
     refreshInspector(){
@@ -1169,7 +1227,7 @@ const App = {
         else if(this.selectedTeamSide && this.selectedTeamIdx>=0) this.inspectTeam(this.selectedTeamSide, this.selectedTeamIdx);
         this.renderTimeline();this.renderHierarchy();
     },
-    _propAssetRef(l,id,path){const name=MetadataDB.resolveWithFallback(id);const w=this._el('div',{style:'display:flex;gap:4px;align-items:center;width:100%'});const sp=this._el('span',{style:'flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;font-weight:500',title:`ID: ${id}`});sp.textContent=name;if(name.startsWith('Unknown')){sp.style.color='var(--status-warning)';const rb=this._el('button',{class:'spawn-btn',textContent:'🔍',title:'Resolve'});rb.onclick=()=>{const e=MetadataDB.getEntry(id);if(e){sp.textContent=e.DisplayName;sp.style.color='';}else this.log(`ID ${id} not in metadata`,'warning');};w.appendChild(sp);w.appendChild(rb);}else{sp.onclick=()=>{const e=MetadataDB.getEntry(id);if(e)this.showRefExplorer(e);};w.appendChild(sp);}return this._propRow(this._humanize(l),w);},
+    _propAssetRef(l,id,path){const name=MetadataDB.resolveWithFallback(id);const cat=this._inferCategoryFromLabel(l);const w=this._el('div',{style:'display:flex;gap:4px;align-items:center;width:100%'});const sp=this._el('span',{style:'flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;font-weight:500',title:`ID: ${id}`});sp.textContent=name;if(name.startsWith('Unknown')){sp.style.color='var(--status-warning)';}sp.onclick=()=>{const e=MetadataDB.getEntry(id);if(e)this.showRefExplorer(e);};w.appendChild(sp);const cb=this._el('button',{class:'spawn-btn',textContent:'⟳',title:`Change ${this._humanize(l)}`});cb.onclick=()=>this.openAssetPicker(cat,entry=>{LevelParser.set(path,String(entry.Id));this.refreshInspector();});w.appendChild(cb);return this._propRow(this._humanize(l),w);},
     // Asset picker row: shows name + [Change] button that opens picker
     _propAssetPicker(label,id,category,onChange){const name=MetadataDB.resolveWithFallback(id);const w=this._el('div',{style:'display:flex;gap:4px;align-items:center;width:100%'});const sp=this._el('span',{style:'flex:1;font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'});sp.textContent=name;w.appendChild(sp);const btn=this._el('button',{class:'spawn-btn',textContent:'⟳',title:`Change ${category}`});btn.onclick=()=>this.openAssetPicker(category,entry=>{onChange(String(entry.Id));sp.textContent=entry.DisplayName;});w.appendChild(btn);return this._propRow(label,w);},
     _makeMenu(items){const w=this._el('div',{style:'position:relative;display:inline-block'});const btn=this._el('button',{class:'item-menu-btn',textContent:'⋮'});btn.onclick=e=>{e.stopPropagation();document.querySelectorAll('.item-menu-dropdown').forEach(m=>m.remove());const dd=this._el('div',{class:'item-menu-dropdown'});items.forEach(it=>{const d=this._el('div',{class:'item-menu-item'});d.textContent=it.l;d.onclick=e2=>{e2.stopPropagation();dd.remove();it.a();};dd.appendChild(d);});w.appendChild(dd);setTimeout(()=>document.addEventListener('click',function cl(){dd.remove();document.removeEventListener('click',cl);},{once:true}),0);};w.appendChild(btn);return w;},

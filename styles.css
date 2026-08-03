@@ -1513,3 +1513,51 @@ textarea {
     font-size: 13px;
 }
 
+/* 📱 MOBILE RESPONSIVE DESIGN */
+@media screen and (max-width: 768px) {
+    #app-container {
+        flex-direction: column;
+    }
+    
+    /* Make Left Panel stack above Main Area */
+    #left-panel {
+        width: 100%;
+        max-height: 40vh;
+        border-right: none;
+        border-bottom: 1px solid var(--border-strong);
+    }
+    
+    /* Center Panel adjustments */
+    #center-panel {
+        flex: 1;
+        min-height: 50vh;
+    }
+    
+    /* Right Panel (Inspector) floats over or stacks */
+    #right-panel {
+        width: 100%;
+        max-height: 50vh;
+        border-left: none;
+        border-top: 1px solid var(--border-strong);
+    }
+
+    /* Modal scaling for mobile */
+    .picker-box {
+        width: 95%;
+        max-height: 90vh;
+    }
+    
+    /* Action Card header adjustments for touch */
+    .action-header {
+        padding: 10px;
+    }
+    .btn-add-inline, .spawn-btn {
+        padding: 6px 12px; /* Bigger tap targets */
+    }
+    
+    /* Hide some toolbar text on very small screens */
+    #toolbar button {
+        font-size: 11px;
+        padding: 6px 8px;
+    }
+}
