@@ -458,7 +458,7 @@ const App = {
     deleteEvent(i){LevelParser.removeEvent(i);this.selectedEventIdx=-1;this.refreshAll();document.querySelector('#property-inspector').innerHTML='<div class="empty-state">Deleted</div>';},
     showEventContextMenu(e,i){const menu=document.querySelector('#context-menu');menu.style.display='flex';menu.style.left=e.clientX+'px';menu.style.top=e.clientY+'px';menu.innerHTML='';[{l:'⧉ Duplicate',a:()=>{LevelParser.duplicateEvent(i);this.refreshAll();}},{l:'⬆ Move Up',a:()=>{if(i>0){LevelParser.moveEvent(i,i-1);this.selectedEventIdx=i-1;this.refreshAll();}}},{l:'⬇ Move Down',a:()=>{if(i<LevelParser.getEvents().length-1){LevelParser.moveEvent(i,i+1);this.selectedEventIdx=i+1;this.refreshAll();}}},{l:'🗑 Delete',a:()=>this.deleteEvent(i)}].forEach(it=>{const d=document.createElement('div');d.className='context-menu-item';d.textContent=it.l;d.onclick=e2=>{e2.stopPropagation();menu.style.display='none';it.a();};menu.appendChild(d);});},
 
-    showActionContextMenu(e,ei,ai){const menu=document.querySelector('#context-menu');menu.style.display='flex';menu.style.left=e.clientX+'px';menu.style.top=e.clientY+'px';menu.innerHTML='';const acts=LevelParser.getEvents()[ei]?.Actions?.Array||[];[{l:'⧉ Duplicate',a:()=>{acts.splice(ai+1,0,JSON.parse(JSON.stringify(acts[ai])));LevelParser._dirty=true;this.refreshAll();}},{l:'⬆ Move Up',a:()=>{if(ai>0){[acts[ai-1],acts[ai]]=[acts[ai],acts[ai-1]];LevelParser._dirty=true;this.refreshAll();}}},{l:'⬇ Move Down',a:()=>{if(ai<acts.length-1){[acts[ai],acts[ai+1]]=[acts[ai+1],acts[ai]];LevelParser._dirty=true;this.refreshAll();}}},{l:'📋 Copy',a:()=>{this._clipboard={type:'action',data:JSON.parse(JSON.stringify(acts[ai]))};this.log('Action copied','info');}},{l:'📌 Paste After',a:()=>{if(this._clipboard?.type==='action'){acts.splice(ai+1,0,JSON.parse(JSON.stringify(this._clipboard.data)));LevelParser._dirty=true;this.refreshAll();}}},{l:'🗑 Delete',a:()=>{acts.splice(ai,1);LevelParser._dirty=true;this.refreshAll();}}].forEach(it=>{const d=document.createElement('div');d.className='context-menu-item';d.textContent=it.l;d.onclick=e2=>{e2.stopPropagation();menu.style.display='none';it.a();};menu.appendChild(d);});},
+    showActionContextMenu(e,ei,ai){const menu=document.querySelector('#context-menu');menu.style.display='flex';menu.style.left=e.clientX+'px';menu.style.top=e.clientY+'px';menu.innerHTML='';const acts=LevelParser.getEvents()[ei]?.Actions?.Array||[];[{l:'⧉ Duplicate',a:()=>{LevelParser._pushUndo();acts.splice(ai+1,0,JSON.parse(JSON.stringify(acts[ai])));LevelParser._dirty=true;this.refreshAll();}},{l:'⬆ Move Up',a:()=>{if(ai>0){LevelParser._pushUndo();[acts[ai-1],acts[ai]]=[acts[ai],acts[ai-1]];LevelParser._dirty=true;this.refreshAll();}}},{l:'⬇ Move Down',a:()=>{if(ai<acts.length-1){LevelParser._pushUndo();[acts[ai],acts[ai+1]]=[acts[ai+1],acts[ai]];LevelParser._dirty=true;this.refreshAll();}}},{l:'📋 Copy',a:()=>{this._clipboard={type:'action',data:JSON.parse(JSON.stringify(acts[ai]))};this.log('Action copied','info');}},{l:'📌 Paste After',a:()=>{if(this._clipboard?.type==='action'){LevelParser._pushUndo();acts.splice(ai+1,0,JSON.parse(JSON.stringify(this._clipboard.data)));LevelParser._dirty=true;this.refreshAll();}}},{l:'🗑 Delete',a:()=>{LevelParser._pushUndo();acts.splice(ai,1);LevelParser._dirty=true;this.refreshAll();}}].forEach(it=>{const d=document.createElement('div');d.className='context-menu-item';d.textContent=it.l;d.onclick=e2=>{e2.stopPropagation();menu.style.display='none';it.a();};menu.appendChild(d);});},
 
     // ═══════════════════════════════════════════
     //  CONTEXT-AWARE PALETTE
@@ -517,19 +517,28 @@ const App = {
         if(!evt.Actions)evt.Actions={Array:[]};
         const acts=evt.Actions.Array;
         const cat=(entry.Category||'').toLowerCase();
-        LevelParser._pushUndo();
 
         // Category-aware: different categories create different action types
-        if(cat==='general') {
-            // Create or find SpawnGeneral action (type 1)
-            let si=acts.findIndex(a=>a.ActionType===1);
-            if(si<0){acts.push(Schema.createBlankAction(1));si=acts.length-1;}
-            LevelParser.set(`Settings.Events.Array.${this.selectedEventIdx}.Actions.Array.${si}.SpawnGeneral.AssetRefSlottableSpec.Id.Value`,String(entry.Id));
-            this.log(`👑 General: ${entry.DisplayName}`,'info');
-            this.inspectAction(this.selectedEventIdx,si);
-        } else if(cat==='spell') {
+        if(cat==='spell') {
             this.log(`✨ ${entry.DisplayName} is a Spell — Spells are configured on Teams, not spawned via events. Use the Team inspector to assign spells.`,'info');
             return;
+        }
+
+        LevelParser._pushUndo();
+        if(cat==='general') {
+            // SpawnGeneral uses the selected team's DefaultCampaignGeneralSpec.
+            let si=acts.findIndex(a=>a.ActionType===1);
+            if(si<0){acts.push(Schema.createBlankAction(1));si=acts.length-1;}
+            const spawnGeneral=acts[si].SpawnGeneral||(acts[si].SpawnGeneral={Side:0,TeamIndex:0});
+            const teamKey=spawnGeneral.Side===1?'RightTeams':'LeftTeams';
+            const team=LevelParser.getData().Settings?.[teamKey]?.Array?.[spawnGeneral.TeamIndex||0];
+            if(team){
+                const generalRef=team.DefaultCampaignGeneralSpec||(team.DefaultCampaignGeneralSpec={});
+                const generalId=generalRef.Id||(generalRef.Id={});
+                generalId.Value=String(entry.Id);
+                this.log(`👑 ${entry.DisplayName} assigned to ${teamKey}[${spawnGeneral.TeamIndex||0}] and Spawn General added`,'info');
+            } else this.log(`⚠ Spawn General added, but ${teamKey}[${spawnGeneral.TeamIndex||0}] does not exist to receive ${entry.DisplayName}`,'warning');
+            this.inspectAction(this.selectedEventIdx,si);
         } else if(cat==='research'||cat==='tech') {
             // Create GiveResearch action (type 21)
             const newAct=Schema.createBlankAction(21);
@@ -548,7 +557,10 @@ const App = {
             // Default: Unit/Slottable → SpawnUnits (type 0)
             let si=this.selectedActionIdx>=0&&acts[this.selectedActionIdx]?.ActionType===0?this.selectedActionIdx:acts.findIndex(a=>a.ActionType===0);
             if(si<0){acts.push(Schema.createBlankAction(0));si=acts.length-1;}
-            LevelParser.addSpawnUnit(this.selectedEventIdx,si,Schema.createBlankSpawnUnit(String(entry.Id)));
+            const spawnUnits=acts[si].SpawnUnits||(acts[si].SpawnUnits={});
+            const units=spawnUnits.Units||(spawnUnits.Units={Array:[]});
+            if(!Array.isArray(units.Array))units.Array=[];
+            units.Array.push(Schema.createBlankSpawnUnit(String(entry.Id)));
             this.log(`⚔ ${entry.DisplayName}`,'info');
             if(this.selectedActionIdx>=0)this.inspectAction(this.selectedEventIdx,this.selectedActionIdx);
             else this.inspectAction(this.selectedEventIdx,si);
@@ -566,6 +578,7 @@ const App = {
         const ins=document.querySelector('#property-inspector');ins.innerHTML='';
         const s=LevelParser.getSettings();if(!s)return;
         this.renderGenericProps(s,'Settings',ins,'⚙ Level Settings');
+        ins.appendChild(this._rawJsonEditor('Settings',s,'Edit settings JSON'));
     },
 
     // ─── TEAM ───
@@ -577,12 +590,14 @@ const App = {
         const team=teams[i];if(!team)return;
         const bp=`Settings.${side==='left'?'LeftTeams':'RightTeams'}.Array.${i}`;
         this.renderGenericProps(team,bp,ins,`👥 ${team.TeamName||'Team '+i}`);
+        ins.appendChild(this._rawJsonEditor(bp,team,'Edit team JSON'));
     },
 
     inspectObject(obj,path,title) {
         const ins=document.querySelector('#property-inspector');ins.innerHTML='';
         if(!obj){ins.innerHTML='<div class="empty-state">No data</div>';return;}
         this.renderGenericProps(obj,path,ins,title);
+        ins.appendChild(this._rawJsonEditor(path,obj,`Edit ${title} JSON`));
     },
 
     // ─── EVENT OVERVIEW ───
@@ -611,9 +626,9 @@ const App = {
             trigDelBtn.onclick=(e)=>{e.stopPropagation();LevelParser._pushUndo();triggers.splice(ti,1);LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderTimeline();this.renderHierarchy();this.log('Trigger deleted','info');};
             trigBtnWrap.appendChild(trigDelBtn);
             trigBtnWrap.appendChild(this._makeMenu([
-                {l:'⧉ Duplicate',a:()=>{triggers.splice(ti+1,0,JSON.parse(JSON.stringify(trig)));LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}},
-                {l:'⬆ Move Up',a:()=>{if(ti>0){[triggers[ti-1],triggers[ti]]=[triggers[ti],triggers[ti-1]];LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}}},
-                {l:'⬇ Move Down',a:()=>{if(ti<triggers.length-1){[triggers[ti],triggers[ti+1]]=[triggers[ti+1],triggers[ti]];LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}}},
+                {l:'⧉ Duplicate',a:()=>{LevelParser._pushUndo();triggers.splice(ti+1,0,JSON.parse(JSON.stringify(trig)));LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}},
+                {l:'⬆ Move Up',a:()=>{if(ti>0){LevelParser._pushUndo();[triggers[ti-1],triggers[ti]]=[triggers[ti],triggers[ti-1]];LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}}},
+                {l:'⬇ Move Down',a:()=>{if(ti<triggers.length-1){LevelParser._pushUndo();[triggers[ti],triggers[ti+1]]=[triggers[ti+1],triggers[ti]];LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}}},
             ]));
             head.appendChild(trigBtnWrap);
             card.appendChild(head);
@@ -624,7 +639,7 @@ const App = {
         });
         // [+ Add Trigger]
         const addTrig=this._el('button',{class:'btn-add-inline'});addTrig.textContent='＋ Add Trigger';
-        addTrig.onclick=()=>{if(!evt.Triggers)evt.Triggers={Array:[]};evt.Triggers.Array.push(Schema.createBlankTrigger(0));LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderTimeline();this.renderHierarchy();};
+        addTrig.onclick=()=>{LevelParser._pushUndo();if(!evt.Triggers)evt.Triggers={Array:[]};evt.Triggers.Array.push(Schema.createBlankTrigger(0));LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderTimeline();this.renderHierarchy();};
         trigSec.appendChild(addTrig);
         ins.appendChild(trigSec);
 
@@ -646,9 +661,9 @@ const App = {
             delBtn.onclick=(e)=>{e.stopPropagation();LevelParser._pushUndo();actions.splice(ai,1);LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderTimeline();this.renderHierarchy();this.log('Action deleted','info');};
             btnWrap.appendChild(delBtn);
             btnWrap.appendChild(this._makeMenu([
-                {l:'⧉ Duplicate',a:()=>{actions.splice(ai+1,0,JSON.parse(JSON.stringify(act)));LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();this.renderTimeline();}},
-                {l:'⬆ Move Up',a:()=>{if(ai>0){[actions[ai-1],actions[ai]]=[actions[ai],actions[ai-1]];LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}}},
-                {l:'⬇ Move Down',a:()=>{if(ai<actions.length-1){[actions[ai],actions[ai+1]]=[actions[ai+1],actions[ai]];LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}}},
+                {l:'⧉ Duplicate',a:()=>{LevelParser._pushUndo();actions.splice(ai+1,0,JSON.parse(JSON.stringify(act)));LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();this.renderTimeline();}},
+                {l:'⬆ Move Up',a:()=>{if(ai>0){LevelParser._pushUndo();[actions[ai-1],actions[ai]]=[actions[ai],actions[ai-1]];LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}}},
+                {l:'⬇ Move Down',a:()=>{if(ai<actions.length-1){LevelParser._pushUndo();[actions[ai],actions[ai+1]]=[actions[ai+1],actions[ai]];LevelParser._dirty=true;this.inspectEventOverview(ei);this.renderHierarchy();}}},
                 {l:'📋 Copy',a:()=>{this._clipboard={type:'action',data:JSON.parse(JSON.stringify(act))};this.log('Copied','info');}},
             ]));
             head.appendChild(btnWrap);
@@ -678,10 +693,11 @@ const App = {
         const tt=Schema.TRIGGER_TYPES[trig.EventTriggerType];
         ins.appendChild(this._el('div',{class:'inspector-header',innerHTML:`<span class="inspector-title">🔔 ${tt?tt.label:'Trigger'}</span>`}));
         // Type selector
-        ins.appendChild(this._propSelect('Trigger Type',trig.EventTriggerType,Object.entries(Schema.TRIGGER_TYPES).map(([k,v])=>({value:parseInt(k),label:v.label})),v=>{LevelParser.set(`${bp}.EventTriggerType`,v);this.inspectTrigger(ei,ti);this.renderTimeline();this.renderHierarchy();}));
+        ins.appendChild(this._propSelect('Trigger Type',trig.EventTriggerType,Object.entries(Schema.TRIGGER_TYPES).map(([k,v])=>({value:parseInt(k),label:v.label})),v=>{if(LevelParser.changeTriggerType(ei,ti,v)){this.inspectTrigger(ei,ti);this.renderTimeline();this.renderHierarchy();}}));
         // Trigger-specific data
         const dk=tt?.dataKey;
         if(dk&&trig[dk])this.renderGenericProps(trig[dk],`${bp}.${dk}`,ins,null);
+        if(dk&&trig[dk])ins.appendChild(this._rawJsonEditor(`${bp}.${dk}`,trig[dk],'Edit trigger JSON'));
         // Back button
         const back=this._el('button',{class:'btn-back',textContent:'← Back to Event'});back.onclick=()=>this.inspectEventOverview(ei);ins.appendChild(back);
     },
@@ -705,7 +721,7 @@ const App = {
         header.appendChild(delBtn);
         ins.appendChild(header);
         // Type selector
-        ins.appendChild(this._propSelect('Action Type',act.ActionType,Object.entries(Schema.ACTION_TYPES).map(([k,v])=>({value:parseInt(k),label:v.label})),v=>{LevelParser.set(`${bp}.ActionType`,v);this.inspectAction(ei,ai);this.renderTimeline();this.renderHierarchy();}));
+        ins.appendChild(this._propSelect('Action Type',act.ActionType,Object.entries(Schema.ACTION_TYPES).map(([k,v])=>({value:parseInt(k),label:v.label})),v=>{if(LevelParser.changeActionType(ei,ai,v)){this.inspectAction(ei,ai);this.renderTimeline();this.renderHierarchy();}}));
         if(!data){const back=this._el('button',{class:'btn-back',textContent:'← Back'});back.onclick=()=>this.inspectEventOverview(ei);ins.appendChild(back);return;}
         const dp=`${bp}.${dk}`;
 
@@ -739,9 +755,9 @@ const App = {
                 body.appendChild(this._propDifficulties('Spawn On',u.DifficultiesToSpawnOn?.Array||[0,1,2],v=>{LevelParser.set(`${dp}.Units.Array.${ui}.DifficultiesToSpawnOn.Array`,v);}));
                 // Action buttons
                 const btns=this._el('div',{class:'spawn-unit-actions'});
-                if(ui>0){const up=this._el('button',{class:'spawn-btn',textContent:'↑',title:'Move Up'});up.onclick=()=>{[units[ui-1],units[ui]]=[units[ui],units[ui-1]];LevelParser._dirty=true;this.inspectAction(ei,ai);this.renderHierarchy();};btns.appendChild(up);}
-                if(ui<units.length-1){const dn=this._el('button',{class:'spawn-btn',textContent:'↓',title:'Move Down'});dn.onclick=()=>{[units[ui],units[ui+1]]=[units[ui+1],units[ui]];LevelParser._dirty=true;this.inspectAction(ei,ai);this.renderHierarchy();};btns.appendChild(dn);}
-                const dup=this._el('button',{class:'spawn-btn',textContent:'⧉',title:'Duplicate'});dup.onclick=()=>{units.splice(ui+1,0,JSON.parse(JSON.stringify(u)));LevelParser._dirty=true;this.inspectAction(ei,ai);this.renderHierarchy();};btns.appendChild(dup);
+                if(ui>0){const up=this._el('button',{class:'spawn-btn',textContent:'↑',title:'Move Up'});up.onclick=()=>{LevelParser._pushUndo();[units[ui-1],units[ui]]=[units[ui],units[ui-1]];LevelParser._dirty=true;this.inspectAction(ei,ai);this.renderHierarchy();};btns.appendChild(up);}
+                if(ui<units.length-1){const dn=this._el('button',{class:'spawn-btn',textContent:'↓',title:'Move Down'});dn.onclick=()=>{LevelParser._pushUndo();[units[ui],units[ui+1]]=[units[ui+1],units[ui]];LevelParser._dirty=true;this.inspectAction(ei,ai);this.renderHierarchy();};btns.appendChild(dn);}
+                const dup=this._el('button',{class:'spawn-btn',textContent:'⧉',title:'Duplicate'});dup.onclick=()=>{LevelParser._pushUndo();units.splice(ui+1,0,JSON.parse(JSON.stringify(u)));LevelParser._dirty=true;this.inspectAction(ei,ai);this.renderHierarchy();};btns.appendChild(dup);
                 const del=this._el('button',{class:'spawn-btn danger',textContent:'✕',title:'Delete'});del.onclick=()=>{LevelParser.removeSpawnUnit(ei,ai,ui);this.inspectAction(ei,ai);this.renderTimeline();this.renderHierarchy();};btns.appendChild(del);
                 body.appendChild(btns);
                 card.appendChild(body);
@@ -760,15 +776,22 @@ const App = {
         }
         // ──── CAMERA PAN ────
         else if(act.ActionType===2) {
-            if(data.Position){ins.appendChild(this._propFP('Target X',data.Position.X?.RawValue||0,v=>LevelParser.set(`${dp}.Position.X.RawValue`,Schema.realToFp(v))));ins.appendChild(this._propFP('Target Y',data.Position.Y?.RawValue||0,v=>LevelParser.set(`${dp}.Position.Y.RawValue`,Schema.realToFp(v))));}
+            ins.appendChild(this._propText('Label',data.Label||'',v=>LevelParser.set(`${dp}.Label`,v)));
+            if(data.Position?.X?.RawValue!==undefined){ins.appendChild(this._propFP('Target X',data.Position.X.RawValue,v=>LevelParser.set(`${dp}.Position.X.RawValue`,Schema.realToFp(v))));ins.appendChild(this._propFP('Target Y',data.Position.Y?.RawValue||0,v=>LevelParser.set(`${dp}.Position.Y.RawValue`,Schema.realToFp(v))));}
+            else if(data.Position?.RawValue!==undefined)ins.appendChild(this._propFP('Position',data.Position.RawValue,v=>LevelParser.set(`${dp}.Position.RawValue`,Schema.realToFp(v))));
             if(data.Rate?.RawValue!==undefined)ins.appendChild(this._propFP('Rate',data.Rate.RawValue,v=>LevelParser.set(`${dp}.Rate.RawValue`,Schema.realToFp(v))));
-            this._renderAdvanced(data,dp,ins,['Position','Rate']);
+            if(data.MaxSpeed?.RawValue!==undefined)ins.appendChild(this._propFP('Max Speed',data.MaxSpeed.RawValue,v=>LevelParser.set(`${dp}.MaxSpeed.RawValue`,Schema.realToFp(v))));
+            this._renderAdvanced(data,dp,ins,['Label','Position','Rate','MaxSpeed']);
         }
         // ──── GIVE SPEECH ────
         else if(act.ActionType===3) {
-            ins.appendChild(this._propText('Label',data.LabelToFind||'',v=>LevelParser.set(`${dp}.LabelToFind`,v)));
-            if(data.GiveSpeechPosition){ins.appendChild(this._propFP('Pos X',data.GiveSpeechPosition.X?.RawValue||0,v=>LevelParser.set(`${dp}.GiveSpeechPosition.X.RawValue`,Schema.realToFp(v))));ins.appendChild(this._propFP('Pos Y',data.GiveSpeechPosition.Y?.RawValue||0,v=>LevelParser.set(`${dp}.GiveSpeechPosition.Y.RawValue`,Schema.realToFp(v))));}
-            this._renderAdvanced(data,dp,ins,['LabelToFind','GiveSpeechPosition']);
+            ins.appendChild(this._propText('Speech',data.Speech||'',v=>LevelParser.set(`${dp}.Speech`,v)));
+            ins.appendChild(this._propText('Labeled Unit',data.LabeledUnit||'',v=>LevelParser.set(`${dp}.LabeledUnit`,v)));
+            ins.appendChild(this._propSide('Show On',data.SideToShowOn||0,v=>LevelParser.set(`${dp}.SideToShowOn`,v)));
+            if(data.TimeToShow?.RawValue!==undefined)ins.appendChild(this._propFP('Time To Show',data.TimeToShow.RawValue,v=>LevelParser.set(`${dp}.TimeToShow.RawValue`,Schema.realToFp(v))));
+            if(data.SecondsToAnimateTextOver?.RawValue!==undefined)ins.appendChild(this._propFP('Text Animation',data.SecondsToAnimateTextOver.RawValue,v=>LevelParser.set(`${dp}.SecondsToAnimateTextOver.RawValue`,Schema.realToFp(v))));
+            if(data.Delay?.RawValue!==undefined)ins.appendChild(this._propFP('Delay',data.Delay.RawValue,v=>LevelParser.set(`${dp}.Delay.RawValue`,Schema.realToFp(v))));
+            this._renderAdvanced(data,dp,ins,['Speech','LabeledUnit','SideToShowOn','TimeToShow','SecondsToAnimateTextOver','Delay']);
         }
         // ──── SIDE WIN ────
         else if(act.ActionType===16) {
@@ -778,12 +801,15 @@ const App = {
         // ──── SPAWN GENERAL ────
         else if(act.ActionType===1) {
             ins.appendChild(this._propSide('Side',data.Side||0,v=>LevelParser.set(`${dp}.Side`,v)));
-            ins.appendChild(this._propTeam('Team',data.TeamIndex||0,v=>LevelParser.set(`${dp}.TeamIndex`,v)));
-            // General picker
-            if(data.AssetRefSlottableSpec?.Id?.Value!==undefined){
-                ins.appendChild(this._propAssetPicker('General',String(data.AssetRefSlottableSpec.Id.Value),'General',v=>{LevelParser.set(`${dp}.AssetRefSlottableSpec.Id.Value`,v);this.inspectAction(ei,ai);}));
-            }
-            this._renderAdvanced(data,dp,ins,['Side','TeamIndex','AssetRefSlottableSpec']);
+            ins.appendChild(this._propTeam('Team',data.TeamIndex||0,v=>LevelParser.set(`${dp}.TeamIndex`,v),data.Side||0));
+            const teamKey=data.Side===1?'RightTeams':'LeftTeams';
+            const teamIndex=data.TeamIndex||0;
+            const team=LevelParser.getData().Settings?.[teamKey]?.Array?.[teamIndex];
+            if(team){
+                const generalPath=`Settings.${teamKey}.Array.${teamIndex}.DefaultCampaignGeneralSpec.Id.Value`;
+                ins.appendChild(this._propAssetPicker('Team General',String(team.DefaultCampaignGeneralSpec?.Id?.Value??0),'General',v=>{LevelParser.set(generalPath,v);this.inspectAction(ei,ai);}));
+            } else ins.appendChild(this._propRow('Team General',this._el('span',{style:'color:var(--status-warning);font-size:11px',textContent:'Select an existing team first'})));
+            this._renderAdvanced(data,dp,ins,['Side','TeamIndex']);
         }
         // ──── FULL SCREEN MESSAGE ────
         else if(act.ActionType===7) {
@@ -797,39 +823,45 @@ const App = {
         }
         // ──── TOGGLE PAUSE ────
         else if(act.ActionType===19) {
-            if(data.Pause!==undefined)ins.appendChild(this._propCheckbox('Pause',data.Pause,v=>LevelParser.set(`${dp}.Pause`,v?1:0)));
-            this._renderAdvanced(data,dp,ins,['Pause']);
+            const pauseKey=Object.prototype.hasOwnProperty.call(data,'IsPaused')?'IsPaused':'Pause';
+            ins.appendChild(this._propCheckbox('Pause',data[pauseKey],v=>LevelParser.set(`${dp}.${pauseKey}`,v?1:0)));
+            this._renderAdvanced(data,dp,ins,[pauseKey]);
         }
         // ──── CUTSCENE MODE ────
         else if(act.ActionType===17) {
-            if(data.Enable!==undefined)ins.appendChild(this._propCheckbox('Enable Cutscene',data.Enable,v=>LevelParser.set(`${dp}.Enable`,v?1:0)));
-            this._renderAdvanced(data,dp,ins,['Enable']);
+            const enabledKey=Object.prototype.hasOwnProperty.call(data,'IsEnabled')?'IsEnabled':'Enable';
+            ins.appendChild(this._propCheckbox('Enable Cutscene',data[enabledKey],v=>LevelParser.set(`${dp}.${enabledKey}`,v?1:0)));
+            this._renderAdvanced(data,dp,ins,[enabledKey]);
         }
         // ──── TEAM AI COMMAND ────
         else if(act.ActionType===20) {
             ins.appendChild(this._propSide('Side',data.Side||0,v=>LevelParser.set(`${dp}.Side`,v)));
-            ins.appendChild(this._propTeam('Team',data.TeamIndex||0,v=>LevelParser.set(`${dp}.TeamIndex`,v)));
+            ins.appendChild(this._propTeam('Team',data.TeamIndex||0,v=>LevelParser.set(`${dp}.TeamIndex`,v),data.Side||0));
             this._renderAdvanced(data,dp,ins,['Side','TeamIndex']);
         }
         // ──── GIVE RESEARCH ────
         else if(act.ActionType===21) {
-            if(data.AssetRefResearchSpec?.Id?.Value!==undefined)ins.appendChild(this._propAssetPicker('Research',String(data.AssetRefResearchSpec.Id.Value),'Research',v=>{LevelParser.set(`${dp}.AssetRefResearchSpec.Id.Value`,v);this.inspectAction(ei,ai);}));
+            const researchKey=Object.prototype.hasOwnProperty.call(data,'AssetRefResearchSpec')?'AssetRefResearchSpec':'AssetRefSlottableSpec';
+            ins.appendChild(this._propAssetPicker('Research',String(data[researchKey]?.Id?.Value??0),'Research',v=>{LevelParser.set(`${dp}.${researchKey}.Id.Value`,v);this.inspectAction(ei,ai);}));
             ins.appendChild(this._propSide('Side',data.Side||0,v=>LevelParser.set(`${dp}.Side`,v)));
-            this._renderAdvanced(data,dp,ins,['AssetRefResearchSpec','Side']);
+            this._renderAdvanced(data,dp,ins,[researchKey,'Side']);
         }
         // ──── TIME SCALE ────
         else if(act.ActionType===38) {
-            if(data.TimeScale?.RawValue!==undefined)ins.appendChild(this._propFP('Time Scale',data.TimeScale.RawValue,v=>LevelParser.set(`${dp}.TimeScale.RawValue`,Schema.realToFp(v))));
-            this._renderAdvanced(data,dp,ins,['TimeScale']);
+            const scaleKey=Object.prototype.hasOwnProperty.call(data,'GoalTimeScale')?'GoalTimeScale':'TimeScale';
+            if(data[scaleKey]?.RawValue!==undefined)ins.appendChild(this._propFP('Time Scale',data[scaleKey].RawValue,v=>LevelParser.set(`${dp}.${scaleKey}.RawValue`,Schema.realToFp(v))));
+            if(data.LerpRate?.RawValue!==undefined)ins.appendChild(this._propFP('Lerp Rate',data.LerpRate.RawValue,v=>LevelParser.set(`${dp}.LerpRate.RawValue`,Schema.realToFp(v))));
+            this._renderAdvanced(data,dp,ins,[scaleKey,'LerpRate']);
         }
         // ──── SET FOG OF WAR ────
         else if(act.ActionType===14) {
-            if(data.Enable!==undefined)ins.appendChild(this._propCheckbox('Enable Fog',data.Enable,v=>LevelParser.set(`${dp}.Enable`,v?1:0)));
-            this._renderAdvanced(data,dp,ins,['Enable']);
+            const fogKey=Object.prototype.hasOwnProperty.call(data,'isFogOfWarEnabled')?'isFogOfWarEnabled':'Enable';
+            ins.appendChild(this._propCheckbox('Enable Fog',data[fogKey],v=>LevelParser.set(`${dp}.${fogKey}`,v?1:0)));
+            this._renderAdvanced(data,dp,ins,[fogKey]);
         }
         // ──── GIVE UPGRADE BUILDING ────
         else if(act.ActionType===39) {
-            if(data.AssetRefUpgradeBuildingSpec?.Id?.Value!==undefined)ins.appendChild(this._propAssetPicker('Building',String(data.AssetRefUpgradeBuildingSpec.Id.Value),'UpgradeBuilding',v=>{LevelParser.set(`${dp}.AssetRefUpgradeBuildingSpec.Id.Value`,v);this.inspectAction(ei,ai);}));
+            ins.appendChild(this._propAssetPicker('Building',String(data.AssetRefUpgradeBuildingSpec?.Id?.Value??0),'UpgradeBuilding',v=>{LevelParser.set(`${dp}.AssetRefUpgradeBuildingSpec.Id.Value`,v);this.inspectAction(ei,ai);}));
             ins.appendChild(this._propSide('Side',data.Side||0,v=>LevelParser.set(`${dp}.Side`,v)));
             ins.appendChild(this._propTeam('Team',data.TeamIndex||0,v=>LevelParser.set(`${dp}.TeamIndex`,v),data.Side||0));
             this._renderAdvanced(data,dp,ins,['AssetRefUpgradeBuildingSpec','Side','TeamIndex']);
@@ -837,9 +869,10 @@ const App = {
         // ──── GESTURE ────
         else if(act.ActionType===4) {
             ins.appendChild(this._propText('Labeled Unit',data.LabeledUnit||'',v=>LevelParser.set(`${dp}.LabeledUnit`,v)));
+            ins.appendChild(this._propAssetPicker('Gesture',String(data.GestureAnimationSpec?.Id?.Value??0),null,v=>{LevelParser.set(`${dp}.GestureAnimationSpec.Id.Value`,v);this.inspectAction(ei,ai);}));
             ins.appendChild(this._propBool('Loop',data.Loop,v=>LevelParser.set(`${dp}.Loop`,v?1:0)));
             if(data.Delay?.RawValue!==undefined)ins.appendChild(this._propFP('Delay',data.Delay.RawValue,v=>LevelParser.set(`${dp}.Delay.RawValue`,Schema.realToFp(v))));
-            this._renderAdvanced(data,dp,ins,['LabeledUnit','Loop','Delay','GestureAnimationSpec']);
+            this._renderAdvanced(data,dp,ins,['LabeledUnit','GestureAnimationSpec','Loop','Delay']);
         }
         // ──── UNIT AI COMMAND ────
         else if(act.ActionType===6) {
@@ -859,7 +892,7 @@ const App = {
         }
         // ──── SPAWN ENTITY PROTOTYPE ────
         else if(act.ActionType===12) {
-            if(data.AssetRefEntityPrototype?.Id?.Value!==undefined)ins.appendChild(this._propAssetRef('Entity',String(data.AssetRefEntityPrototype.Id.Value),`${dp}.AssetRefEntityPrototype.Id.Value`));
+            ins.appendChild(this._propAssetRef('AssetRefEntityPrototype',String(data.AssetRefEntityPrototype?.Id?.Value??0),`${dp}.AssetRefEntityPrototype.Id.Value`));
             ins.appendChild(this._propSide('Side',data.SideToPlaceOn||0,v=>LevelParser.set(`${dp}.SideToPlaceOn`,v)));
             ins.appendChild(this._propTeam('Team',data.TeamIndexToPlaceOn||0,v=>LevelParser.set(`${dp}.TeamIndexToPlaceOn`,v),data.SideToPlaceOn||0));
             ins.appendChild(this._propBool('Place at Position',data.ShouldPlaceAtPosition,v=>LevelParser.set(`${dp}.ShouldPlaceAtPosition`,v?1:0)));
@@ -958,6 +991,7 @@ const App = {
         else {
             this.renderGenericProps(data,dp,ins,at?at.label:'Action Data');
         }
+        ins.appendChild(this._rawJsonEditor(dp,data,'Edit action JSON'));
         // Back button
         const back=this._el('button',{class:'btn-back',textContent:'← Back to Event'});back.onclick=()=>{this.selectedActionIdx=-1;this.inspectEventOverview(ei);};ins.appendChild(back);
     },
@@ -983,7 +1017,17 @@ const App = {
         for(const key of Object.keys(obj)) {
             const val=obj[key],fp=basePath?`${basePath}.${key}`:key;
             if(val===null||val===undefined){rows.push(this._propRow(key,this._el('span',{style:'color:var(--text-muted)',textContent:'null'})));}
-            else if(key==='Array'&&Array.isArray(val)){this._renderArr(val,basePath,container,title||'Items');return;}
+            else if(Array.isArray(val)){
+                const g=this._el('div',{class:'prop-group-nested'});
+                const h=this._el('div',{class:'prop-group-header',style:'display:flex;justify-content:space-between;align-items:center'});
+                const lbl=this._el('span',{textContent:`▶ ${key} (${val.length})`,style:'flex:1;cursor:pointer'});
+                const addBtn=this._el('button',{class:'btn-add-inline',textContent:'＋ Add Item',style:'padding:2px 6px'});
+                addBtn.onclick=e=>{e.stopPropagation();LevelParser._pushUndo();val.push(val.length?JSON.parse(JSON.stringify(val[val.length-1])):0);LevelParser._dirty=true;this.refreshInspector();};
+                h.appendChild(lbl);h.appendChild(addBtn);
+                const c=this._el('div',{style:'display:none;padding-left:8px;border-left:2px solid var(--border-subtle)'});
+                lbl.onclick=()=>{const o=c.style.display!=='none';c.style.display=o?'none':'block';lbl.textContent=(o?'▶':'▼')+` ${key} (${val.length})`;};
+                this._renderArr(val,fp,c,key);g.appendChild(h);g.appendChild(c);rows.push(g);
+            }
             else if(typeof val==='object'&&val.Array!==undefined&&Array.isArray(val.Array)){
                 const g=this._el('div',{class:'prop-group-nested'});
                 const h=this._el('div',{class:'prop-group-header',style:'display:flex;justify-content:space-between;align-items:center'});
@@ -991,7 +1035,6 @@ const App = {
                 const addBtn=this._el('button',{class:'btn-add-inline',textContent:'＋ Add Item',style:'padding:2px 6px'});
                 addBtn.onclick=e=>{
                     e.stopPropagation();
-                    LevelParser._pushUndo();
                     const assetRefKeys=['Customizations','Techs','Loadout','AiBuildTargets','BuildArmyDatas','Spells','UnitsToSpawn','Units'];
                     if(assetRefKeys.includes(key)) {
                         // Open asset picker for asset-reference arrays
@@ -999,6 +1042,7 @@ const App = {
                         const pickerCat=catMap[key];
                         if(pickerCat) {
                             this.openAssetPicker(pickerCat, entry=>{
+                                LevelParser._pushUndo();
                                 if (key==='UnitsToSpawn' || key==='Units') {
                                     val.Array.push(Schema.createBlankSpawnUnit(String(entry.Id)));
                                 } else {
@@ -1008,13 +1052,16 @@ const App = {
                                 this.log(`+ ${entry.DisplayName} → ${key}`,'info');
                             });
                         } else {
+                            LevelParser._pushUndo();
                             val.Array.push({Id:{Value:"0"}});
                             LevelParser._dirty=true;this.refreshInspector();
                         }
                     } else if(val.Array.length>0) {
+                        LevelParser._pushUndo();
                         val.Array.push(JSON.parse(JSON.stringify(val.Array[val.Array.length-1])));
                         LevelParser._dirty=true;this.refreshInspector();
                     } else {
+                        LevelParser._pushUndo();
                         const isScalar = key.includes('Difficulties') || key.includes('Slots') || key==='DifficultiesToSpawnOn' || key==='ExtraSlotsForDifficulty' || key==='Samples';
                         const isCurveKey = key==='Keys';
                         if(isScalar) val.Array.push(0);
@@ -1052,11 +1099,11 @@ const App = {
                 const ls=this._el('span',{textContent:`▶ ${il}`,style:'flex:1;cursor:pointer'});
                 const act=this._el('div',{style:'display:flex;gap:2px'});
                 
-                if(i>0){const up=this._el('button',{class:'spawn-btn',textContent:'↑',title:'Move Up'});up.onclick=e=>{e.stopPropagation();[arr[i-1],arr[i]]=[arr[i],arr[i-1]];LevelParser._dirty=true;this.refreshInspector();};act.appendChild(up);}
-                if(i<arr.length-1){const dn=this._el('button',{class:'spawn-btn',textContent:'↓',title:'Move Down'});dn.onclick=e=>{e.stopPropagation();[arr[i],arr[i+1]]=[arr[i+1],arr[i]];LevelParser._dirty=true;this.refreshInspector();};act.appendChild(dn);}
+                if(i>0){const up=this._el('button',{class:'spawn-btn',textContent:'↑',title:'Move Up'});up.onclick=e=>{e.stopPropagation();LevelParser._pushUndo();[arr[i-1],arr[i]]=[arr[i],arr[i-1]];LevelParser._dirty=true;this.refreshInspector();};act.appendChild(up);}
+                if(i<arr.length-1){const dn=this._el('button',{class:'spawn-btn',textContent:'↓',title:'Move Down'});dn.onclick=e=>{e.stopPropagation();LevelParser._pushUndo();[arr[i],arr[i+1]]=[arr[i+1],arr[i]];LevelParser._dirty=true;this.refreshInspector();};act.appendChild(dn);}
                 
-                const dup=this._el('button',{class:'spawn-btn',textContent:'⧉',title:'Duplicate'});dup.onclick=e=>{e.stopPropagation();arr.splice(i+1,0,JSON.parse(JSON.stringify(item)));LevelParser._dirty=true;this.refreshInspector();};act.appendChild(dup);
-                const db=this._el('button',{class:'spawn-btn danger',textContent:'✕',title:'Delete'});db.onclick=e=>{e.stopPropagation();arr.splice(i,1);LevelParser._dirty=true;this.refreshInspector();};act.appendChild(db);
+                const dup=this._el('button',{class:'spawn-btn',textContent:'⧉',title:'Duplicate'});dup.onclick=e=>{e.stopPropagation();LevelParser._pushUndo();arr.splice(i+1,0,JSON.parse(JSON.stringify(item)));LevelParser._dirty=true;this.refreshInspector();};act.appendChild(dup);
+                const db=this._el('button',{class:'spawn-btn danger',textContent:'✕',title:'Delete'});db.onclick=e=>{e.stopPropagation();LevelParser._pushUndo();arr.splice(i,1);LevelParser._dirty=true;this.refreshInspector();};act.appendChild(db);
                 
                 h.appendChild(ls);h.appendChild(act);g.appendChild(h);
                 const c=this._el('div',{style:'display:none;padding-left:8px'});
@@ -1064,6 +1111,34 @@ const App = {
                 this.renderGenericProps(item,ip,c,null);g.appendChild(c);container.appendChild(g);
             }else container.appendChild(this._propScalar(`[${i}]`,item,ip));
         });
+    },
+
+    _rawJsonEditor(path,value,label='Edit JSON') {
+        const section=this._el('div',{class:'raw-json-section'});
+        const header=this._el('div',{class:'advanced-header',textContent:`▶ ${label}`});
+        const body=this._el('div',{style:'display:none'});
+        const help=this._el('div',{class:'raw-json-help',textContent:'Use this for fields without a dedicated control. Asset IDs larger than 15 digits are preserved.'});
+        const editor=this._el('textarea',{class:'raw-json-editor',spellcheck:'false'});
+        editor.value=JSON.stringify(value,null,2);
+        const footer=this._el('div',{class:'raw-json-footer'});
+        const status=this._el('span',{class:'raw-json-status'});
+        const apply=this._el('button',{class:'btn-add-inline primary',textContent:'Apply JSON'});
+        header.onclick=()=>{const open=body.style.display!=='none';body.style.display=open?'none':'block';header.textContent=(open?'▶':'▼')+` ${label}`;};
+        apply.onclick=()=>{
+            try {
+                const parsed=typeof safeParse==='function'?safeParse(editor.value):JSON.parse(editor.value);
+                if(!LevelParser.set(path,parsed))throw new Error('The selected property no longer exists');
+                status.textContent='Saved';status.style.color='var(--status-success)';
+                this.log(`Updated JSON: ${path}`,'info');
+                this.refreshInspector();
+            } catch(err) {
+                status.textContent=`Invalid JSON: ${err.message}`;status.style.color='var(--status-error)';
+            }
+        };
+        footer.appendChild(status);footer.appendChild(apply);
+        body.appendChild(help);body.appendChild(editor);body.appendChild(footer);
+        section.appendChild(header);section.appendChild(body);
+        return section;
     },
 
     // ─── REFERENCE EXPLORER ───
@@ -1201,7 +1276,7 @@ const App = {
     _propRow(label,el){const r=this._el('div',{class:'property-row'});const l=this._el('div',{class:'property-label',title:label});l.textContent=this._humanize(label);const v=this._el('div',{class:'property-value'});v.appendChild(el);r.appendChild(l);r.appendChild(v);return r;},
     _propScalar(l,v,p){if(typeof v==='string')return this._propText(l,v,x=>LevelParser.set(p,x));if(typeof v==='number')return this._propNumber(l,v,x=>LevelParser.set(p,x));return this._propRow(l,this._el('span',{textContent:String(v)}));},
     _propText(l,v,fn){const i=this._el('input',{type:'text',value:v||''});i.onchange=()=>fn(i.value);return this._propRow(l,i);},
-    _propNumber(l,v,fn){const i=this._el('input',{type:'number',value:v});i.onchange=()=>{fn(parseInt(i.value)||0);};return this._propRow(l,i);},
+    _propNumber(l,v,fn){const i=this._el('input',{type:'number',step:'any',value:v});i.onchange=()=>{const n=Number(i.value);fn(Number.isFinite(n)?n:0);};return this._propRow(l,i);},
     _propFP(l,raw,fn){const i=this._el('input',{type:'number',step:'0.1',value:Schema.fpToReal(raw).toFixed(2)});i.title=`Raw: ${raw}`;i.onchange=()=>{fn(parseFloat(i.value)||0);this.renderTimeline();};return this._propRow(l,i);},
     _propCheckbox(l,v,fn){const i=this._el('input',{type:'checkbox'});i.checked=!!(v&&v!=='0');i.onchange=()=>fn(i.checked);return this._propRow(l,i);},
     _propSelect(l,v,opts,fn){const s=this._el('select');opts.forEach(o=>{const opt=this._el('option',{value:o.value});opt.textContent=o.label;if(String(o.value)===String(v))opt.selected=true;s.appendChild(opt);});s.onchange=()=>fn(parseInt(s.value));return this._propRow(l,s);},
@@ -1227,9 +1302,9 @@ const App = {
         else if(this.selectedTeamSide && this.selectedTeamIdx>=0) this.inspectTeam(this.selectedTeamSide, this.selectedTeamIdx);
         this.renderTimeline();this.renderHierarchy();
     },
-    _propAssetRef(l,id,path){const name=MetadataDB.resolveWithFallback(id);const cat=this._inferCategoryFromLabel(l);const w=this._el('div',{style:'display:flex;gap:4px;align-items:center;width:100%'});const sp=this._el('span',{style:'flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;font-weight:500',title:`ID: ${id}`});sp.textContent=name;if(name.startsWith('Unknown')){sp.style.color='var(--status-warning)';}sp.onclick=()=>{const e=MetadataDB.getEntry(id);if(e)this.showRefExplorer(e);};w.appendChild(sp);const cb=this._el('button',{class:'spawn-btn',textContent:'⟳',title:`Change ${this._humanize(l)}`});cb.onclick=()=>this.openAssetPicker(cat,entry=>{LevelParser.set(path,String(entry.Id));this.refreshInspector();});w.appendChild(cb);return this._propRow(this._humanize(l),w);},
+    _propAssetRef(l,id,path){const name=MetadataDB.resolveWithFallback(id);const cat=this._inferCategoryFromLabel(l);const w=this._el('div',{style:'display:flex;gap:4px;align-items:center;width:100%'});const sp=this._el('span',{style:'flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;font-weight:500',title:`ID: ${id}`});sp.textContent=name;if(name.startsWith('Unknown')){sp.style.color='var(--status-warning)';}sp.onclick=()=>{const e=MetadataDB.getEntry(id);if(e)this.showRefExplorer(e);};w.appendChild(sp);const cb=this._el('button',{class:'spawn-btn',textContent:'⟳',title:`Change ${this._humanize(l)}`});cb.onclick=()=>this.openAssetPicker(cat,entry=>{LevelParser.set(path,String(entry.Id));this.refreshInspector();});w.appendChild(cb);const manual=this._el('button',{class:'spawn-btn',textContent:'#',title:'Enter an asset ID manually'});manual.onclick=()=>{const next=prompt(`Asset ID for ${this._humanize(l)}:`,String(id));if(next===null)return;const clean=next.trim();if(!/^\d+$/.test(clean)){this.log('Asset ID must contain digits only','error');return;}LevelParser.set(path,clean);this.refreshInspector();};w.appendChild(manual);return this._propRow(this._humanize(l),w);},
     // Asset picker row: shows name + [Change] button that opens picker
-    _propAssetPicker(label,id,category,onChange){const name=MetadataDB.resolveWithFallback(id);const w=this._el('div',{style:'display:flex;gap:4px;align-items:center;width:100%'});const sp=this._el('span',{style:'flex:1;font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'});sp.textContent=name;w.appendChild(sp);const btn=this._el('button',{class:'spawn-btn',textContent:'⟳',title:`Change ${category}`});btn.onclick=()=>this.openAssetPicker(category,entry=>{onChange(String(entry.Id));sp.textContent=entry.DisplayName;});w.appendChild(btn);return this._propRow(label,w);},
+    _propAssetPicker(label,id,category,onChange){const name=MetadataDB.resolveWithFallback(id);const w=this._el('div',{style:'display:flex;gap:4px;align-items:center;width:100%'});const sp=this._el('span',{style:'flex:1;font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'});sp.textContent=name;w.appendChild(sp);const btn=this._el('button',{class:'spawn-btn',textContent:'⟳',title:`Change ${category||'asset'}`});btn.onclick=()=>this.openAssetPicker(category,entry=>{onChange(String(entry.Id));sp.textContent=entry.DisplayName;});w.appendChild(btn);const manual=this._el('button',{class:'spawn-btn',textContent:'#',title:'Enter an asset ID manually'});manual.onclick=()=>{const next=prompt(`Asset ID for ${label}:`,String(id));if(next===null)return;const clean=next.trim();if(!/^\d+$/.test(clean)){this.log('Asset ID must contain digits only','error');return;}onChange(clean);sp.textContent=MetadataDB.resolveWithFallback(clean);};w.appendChild(manual);return this._propRow(label,w);},
     _makeMenu(items){const w=this._el('div',{style:'position:relative;display:inline-block'});const btn=this._el('button',{class:'item-menu-btn',textContent:'⋮'});btn.onclick=e=>{e.stopPropagation();document.querySelectorAll('.item-menu-dropdown').forEach(m=>m.remove());const dd=this._el('div',{class:'item-menu-dropdown'});items.forEach(it=>{const d=this._el('div',{class:'item-menu-item'});d.textContent=it.l;d.onclick=e2=>{e2.stopPropagation();dd.remove();it.a();};dd.appendChild(d);});w.appendChild(dd);setTimeout(()=>document.addEventListener('click',function cl(){dd.remove();document.removeEventListener('click',cl);},{once:true}),0);};w.appendChild(btn);return w;},
 };
 

@@ -1128,6 +1128,48 @@ textarea {
     min-width: 60px;
 }
 
+/* Raw JSON fallback for level fields that do not have a bespoke inspector. */
+.raw-json-section {
+    margin: 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+.raw-json-help {
+    padding: 7px 8px 4px;
+    color: var(--text-muted);
+    font-size: 10px;
+    line-height: 1.35;
+}
+.raw-json-editor {
+    display: block;
+    width: calc(100% - 16px);
+    min-height: 180px;
+    margin: 4px 8px;
+    resize: vertical;
+    padding: 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    background: var(--bg-base);
+    font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+    user-select: text;
+}
+.raw-json-footer {
+    display: flex;
+    min-height: 30px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 4px 8px 8px;
+}
+.raw-json-status {
+    font-size: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 /* ═══ V5: SECTION LABELS ═══ */
 .section-label {
     font-weight: 600;

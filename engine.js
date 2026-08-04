@@ -1006,18 +1006,62 @@ window.LevelParser = {
   },
   
   set(path, value) {
-    this._pushUndo();
+    if (!this._data || !path) return false;
     const parts = path.split('.');
     let obj = this._data;
     for (let i = 0; i < parts.length - 1; i++) {
       const p = parts[i];
-      if (/^\d+$/.test(p)) obj = obj[parseInt(p)];
-      else obj = obj[p];
-      if (obj == null) return false;
+      const nextIsIndex = /^\d+$/.test(parts[i + 1]);
+      if (/^\d+$/.test(p)) {
+        const index = parseInt(p, 10);
+        if (!Array.isArray(obj)) return false;
+        if (obj[index] == null) obj[index] = nextIsIndex ? [] : {};
+        obj = obj[index];
+      } else {
+        if (obj == null || typeof obj !== 'object') return false;
+        if (obj[p] == null) obj[p] = nextIsIndex ? [] : {};
+        obj = obj[p];
+      }
     }
+    if (obj == null || typeof obj !== 'object') return false;
+    this._pushUndo();
     const lastKey = parts[parts.length - 1];
     if (/^\d+$/.test(lastKey)) obj[parseInt(lastKey)] = value;
     else obj[lastKey] = value;
+    this._dirty = true;
+    return true;
+  },
+
+  changeActionType(eventIndex, actionIndex, newType) {
+    const actions = this.getEvents()[eventIndex]?.Actions?.Array;
+    const action = actions?.[actionIndex];
+    const typeInfo = window.Schema.ACTION_TYPES[newType];
+    if (!action || !typeInfo) return false;
+
+    this._pushUndo();
+    action.ActionType = newType;
+    // Real levels often contain only the payload for their current type.  Keep
+    // existing data, but materialize the new payload so its inspector is editable.
+    if (action[typeInfo.dataKey] == null) {
+      const template = window.Schema.createBlankAction(newType);
+      action[typeInfo.dataKey] = template[typeInfo.dataKey];
+    }
+    this._dirty = true;
+    return true;
+  },
+
+  changeTriggerType(eventIndex, triggerIndex, newType) {
+    const triggers = this.getEvents()[eventIndex]?.Triggers?.Array;
+    const trigger = triggers?.[triggerIndex];
+    const typeInfo = window.Schema.TRIGGER_TYPES[newType];
+    if (!trigger || !typeInfo) return false;
+
+    this._pushUndo();
+    trigger.EventTriggerType = newType;
+    if (trigger[typeInfo.dataKey] == null) {
+      const template = window.Schema.createBlankTrigger(newType);
+      trigger[typeInfo.dataKey] = template[typeInfo.dataKey];
+    }
     this._dirty = true;
     return true;
   },
