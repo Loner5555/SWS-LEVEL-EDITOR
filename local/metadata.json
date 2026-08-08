@@ -127420,5 +127420,107 @@
     ],
     "IsBuildableUnit": 0,
     "SlotType": 2
+  },
+  "536301003920376596": {
+    "Id": "536301003920376596",
+    "DisplayName": "All Generals_all_generals_3",
+    "InternalName": "All Generals_all_generals_3",
+    "Category": "Unknown",
+    "Source": "AssetResources",
+    "SourcePriority": 4,
+    "Path": "Resources/DB/IAP/AllGenerals_all_generals_3",
+    "Address": "DB/IAP/AllGenerals_all_generals_3",
+    "Aliases": [],
+    "SearchKeywords": [
+      "all generals_all_generals_3",
+      "all",
+      "generals_all_generals_3",
+      "unknown"
+    ]
+  },
+  "1063620727025506833": {
+    "Id": "1063620727025506833",
+    "DisplayName": "All Generals_all_generals_2",
+    "InternalName": "All Generals_all_generals_2",
+    "Category": "Unknown",
+    "Source": "AssetResources",
+    "SourcePriority": 4,
+    "Path": "Resources/DB/Bundles/AllGenerals_all_generals_2",
+    "Address": "DB/Bundles/AllGenerals_all_generals_2",
+    "Aliases": [],
+    "SearchKeywords": [
+      "all generals_all_generals_2",
+      "all",
+      "generals_all_generals_2",
+      "unknown"
+    ]
+  },
+  "1643214327591018676": {
+    "Id": "1643214327591018676",
+    "DisplayName": "All Generals_all_generals_3",
+    "InternalName": "All Generals_all_generals_3",
+    "Category": "Unknown",
+    "Source": "AssetResources",
+    "SourcePriority": 4,
+    "Path": "Resources/DB/Bundles/AllGenerals_all_generals_3",
+    "Address": "DB/Bundles/AllGenerals_all_generals_3",
+    "Aliases": [],
+    "SearchKeywords": [
+      "all generals_all_generals_3",
+      "all",
+      "generals_all_generals_3",
+      "unknown"
+    ]
+  },
+  "1800028117760182353": {
+    "Id": "1800028117760182353",
+    "DisplayName": "All Generals_all_generals_2",
+    "InternalName": "All Generals_all_generals_2",
+    "Category": "Unknown",
+    "Source": "AssetResources",
+    "SourcePriority": 4,
+    "Path": "Resources/DB/IAP/AllGenerals_all_generals_2",
+    "Address": "DB/IAP/AllGenerals_all_generals_2",
+    "Aliases": [],
+    "SearchKeywords": [
+      "all generals_all_generals_2",
+      "all",
+      "generals_all_generals_2",
+      "unknown"
+    ]
+  },
+  "1997237249916123033": {
+    "Id": "1997237249916123033",
+    "DisplayName": "All Generals_all_generals_1",
+    "InternalName": "All Generals_all_generals_1",
+    "Category": "Unknown",
+    "Source": "AssetResources",
+    "SourcePriority": 4,
+    "Path": "Resources/DB/IAP/AllGenerals_all_generals_1",
+    "Address": "DB/IAP/AllGenerals_all_generals_1",
+    "Aliases": [],
+    "SearchKeywords": [
+      "all generals_all_generals_1",
+      "all",
+      "generals_all_generals_1",
+      "unknown"
+    ]
+  },
+  "2615829433582639662": {
+    "Id": "2615829433582639662",
+    "DisplayName": "All Generals_all_generals_1",
+    "InternalName": "All Generals_all_generals_1",
+    "Category": "Unknown",
+    "Source": "AssetResources",
+    "SourcePriority": 4,
+    "Path": "Resources/DB/Bundles/AllGenerals_all_generals_1",
+    "Address": "DB/Bundles/AllGenerals_all_generals_1",
+    "Aliases": [],
+    "SearchKeywords": [
+      "all generals_all_generals_1",
+      "all",
+      "generals_all_generals_1",
+      "unknown"
+    ]
   }
 }
