@@ -932,6 +932,7 @@ textarea {
 /* ═══ PALETTE TABS ═══ */
 .palette-tabs {
     display: flex;
+    flex-wrap: wrap;
     gap: 2px;
     padding: 4px;
     background: var(--bg-header);
@@ -939,7 +940,6 @@ textarea {
     position: sticky;
     top: 0;
     z-index: 10;
-    overflow-x: auto;
 }
 .palette-tab {
     background: transparent;
@@ -1602,4 +1602,105 @@ textarea {
         font-size: 11px;
         padding: 6px 8px;
     }
+}
+
+/* ═══ DRAG-DROP OVERLAY ═══ */
+body.drag-over::after {
+    content: '📂 Drop .json level file here';
+    position: fixed;
+    inset: 8px;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    color: var(--accent-primary);
+    background: rgba(59, 130, 246, 0.06);
+    border: 3px dashed var(--accent-primary);
+    border-radius: var(--radius-lg);
+    pointer-events: none;
+    animation: dragPulse 1.5s ease-in-out infinite;
+    backdrop-filter: blur(2px);
+}
+@keyframes dragPulse { 0%,100% { opacity: 0.6; } 50% { opacity: 1; } }
+
+/* ═══ TOAST NOTIFICATIONS ═══ */
+.toast-notification {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 10000;
+    padding: 12px 20px;
+    border-radius: var(--radius-md);
+    background: var(--bg-header);
+    border: 1px solid var(--border-strong);
+    box-shadow: var(--shadow-lg);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    color: var(--text-primary);
+    animation: toastIn 0.3s ease-out;
+    max-width: 380px;
+    backdrop-filter: blur(12px);
+}
+.toast-notification.success { border-left: 4px solid var(--status-success); }
+.toast-notification.error { border-left: 4px solid var(--status-error); }
+.toast-notification.warning { border-left: 4px solid var(--status-warning); }
+.toast-notification.info { border-left: 4px solid var(--status-info); }
+@keyframes toastIn { from { transform: translateX(100%); opacity: 0; } }
+@keyframes toastOut { to { transform: translateX(100%); opacity: 0; } }
+
+/* ═══ PICKER ANIMATIONS ═══ */
+.picker-overlay { animation: fadeIn 0.15s ease-out; }
+.picker-box { animation: slideUp 0.2s ease-out; }
+@keyframes fadeIn { from { opacity: 0; } }
+@keyframes slideUp { from { transform: translateY(20px); opacity: 0; } }
+
+.picker-item {
+    border-left: 3px solid transparent;
+    transition: all 0.12s ease;
+}
+.picker-item:hover {
+    border-left-color: var(--accent-primary);
+    transform: translateX(2px);
+    background: var(--bg-active) !important;
+}
+
+/* ═══ IMPROVED SPAWN CARDS ═══ */
+.spawn-unit-card {
+    background: linear-gradient(135deg, var(--bg-active), var(--bg-header));
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+.spawn-unit-card:hover {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 1px var(--accent-glow);
+}
+
+/* ═══ MIGRATION BADGE ═══ */
+.migration-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--status-warning);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    margin-left: 8px;
+    animation: fadeIn 0.3s ease-out;
+}
+
+/* ═══ SMOOTH INSPECTOR ═══ */
+#property-inspector > * {
+    animation: fadeIn 0.1s ease-out;
+}
+
+/* ═══ METADATA LOADED STATE ═══ */
+.metadata-banner.loaded {
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.25);
+    color: var(--status-success);
 }

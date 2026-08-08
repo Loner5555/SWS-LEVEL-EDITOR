@@ -13,12 +13,43 @@ const App = {
     _clipboard: null,
     _metadataSource: null,
     _metadataLoadedAt: null,
+    _hierarchyFilter: '',
 
     async init() {
         this.bindToolbar();
         this.bindKeyboard();
         this.initSplitter();
         document.addEventListener('click', () => { document.querySelector('#context-menu').style.display='none'; document.querySelectorAll('.item-menu-dropdown,.action-dropdown').forEach(m=>m.remove()); });
+        // Drag-and-drop: drop a .json file to load it as a level
+        let dragCounter = 0;
+        document.addEventListener('dragenter', e => { e.preventDefault(); dragCounter++; document.body.classList.add('drag-over'); });
+        document.addEventListener('dragleave', e => { e.preventDefault(); dragCounter--; if (dragCounter <= 0) { dragCounter = 0; document.body.classList.remove('drag-over'); } });
+        document.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+        document.addEventListener('drop', e => {
+            e.preventDefault();
+            dragCounter = 0;
+            document.body.classList.remove('drag-over');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                const file = files[0];
+                if (file.name.endsWith('.json')) {
+                    const reader = new FileReader();
+                    reader.onload = ev => {
+                        try {
+                            const json = JSON.parse(ev.target.result);
+                            LevelParser.load(json, file.name);
+                            this.onLevelLoaded(file.name);
+                            this.log(`📂 Loaded via drag-drop: ${file.name}`, 'info');
+                            this.toast(`📂 Loaded: ${file.name}`, 'success');
+                        } catch(err) { this.log('❌ Invalid JSON file: ' + err.message, 'error'); this.toast('❌ Invalid JSON', 'error'); }
+                    };
+                    reader.readAsText(file);
+                } else {
+                    this.log('⚠ Drop a .json level file to load it', 'warning');
+                    this.toast('Drop a .json file', 'warning');
+                }
+            }
+        });
         this.log('SWS Level Studio v5', 'info');
         try {
             await IDBCache.open();
@@ -36,6 +67,7 @@ const App = {
                     const stats = MetadataDB.buildStats();
                     this.log(`✅ Loaded: local/metadata.json → ${MetadataDB.size()} entries`, 'info');
                     this.log(`   Units: ${stats.categories.Unit||0} | Generals: ${stats.categories.General||0} | Spells: ${stats.categories.Spell||0} | Slottable: ${stats.categories.Slottable||0}`, 'info');
+                    this.toast(`📦 Metadata: ${MetadataDB.size()} entries loaded`, 'success');
                     this.updateMetadataBanner();
                     this.renderPalette();
                     loadedFromFile = true;
@@ -243,6 +275,9 @@ const App = {
         $('#unit-search')?.addEventListener('input',e=>this.renderPalette(e.target.value));
         // Grid size
         document.querySelectorAll('.grid-size-btn').forEach(btn=>{btn.addEventListener('click',()=>{this._gridSize=btn.dataset.size;document.querySelectorAll('.grid-size-btn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');this.renderPalette();IDBCache.saveWorkspace({gridSize:this._gridSize}).catch(()=>{});});});
+        // Collapse/Expand all hierarchy nodes
+        $('#btn-collapse-all')?.addEventListener('click',()=>{document.querySelectorAll('#hierarchy-tree .tree-node').forEach(n=>n.classList.remove('expanded'));});
+        $('#btn-expand-all')?.addEventListener('click',()=>{document.querySelectorAll('#hierarchy-tree .tree-node').forEach(n=>n.classList.add('expanded'));});
     },
 
     bindKeyboard() {
@@ -276,6 +311,20 @@ const App = {
             if(e.ctrlKey&&e.key==='v'&&this._clipboard?.type==='action'&&this.selectedEventIdx>=0) {
                 const acts=LevelParser.getEvents()[this.selectedEventIdx]?.Actions?.Array;
                 if(acts){LevelParser._pushUndo();acts.push(JSON.parse(JSON.stringify(this._clipboard.data)));LevelParser._dirty=true;this.inspectEventOverview(this.selectedEventIdx);this.renderTimeline();this.renderHierarchy();this.log('Action pasted (Ctrl+V)','info');}
+            }
+            // Ctrl+D: duplicate selected event
+            if(e.ctrlKey&&e.key==='d'&&this.selectedEventIdx>=0) {
+                e.preventDefault();
+                const evts=LevelParser.getEvents();
+                const evt=evts[this.selectedEventIdx];
+                if(evt){LevelParser._pushUndo();evts.splice(this.selectedEventIdx+1,0,JSON.parse(JSON.stringify(evt)));LevelParser._dirty=true;this.selectedEventIdx++;this.refreshAll();this.inspectEventOverview(this.selectedEventIdx);this.log(`Event duplicated → Event ${this.selectedEventIdx}`,'info');this.toast('⧉ Event duplicated','info');}
+            }
+        });
+        // Warn before closing with unsaved changes
+        window.addEventListener('beforeunload', e => {
+            if(LevelParser.isLoaded() && LevelParser.isDirty()){
+                e.preventDefault();
+                e.returnValue = 'You have unsaved changes. Are you sure you want to leave?';
             }
         });
     },
@@ -316,9 +365,22 @@ const App = {
     async openLevel(e) {
         const f=e.target.files[0]; if(!f)return;
         const t=await f.text();
-        if(LevelParser.load(t,f.name)){document.querySelector('#current-file-name').textContent=f.name;this.log(`Loaded: ${f.name} (${(t.length/1024).toFixed(1)}KB)`,'info');this.refreshAll();}
-        else this.log(`Parse failed: ${f.name}`,'error');
+        if(LevelParser.load(t,f.name)){
+            this.onLevelLoaded(f.name);
+            this.log(`Loaded: ${f.name} (${(t.length/1024).toFixed(1)}KB)`,'info');
+        }
+        else{this.log(`Parse failed: ${f.name}`,'error');this.toast('❌ Parse failed','error');}
         e.target.value='';
+    },
+    onLevelLoaded(fileName) {
+        document.querySelector('#current-file-name').textContent=fileName;
+        this.refreshAll();
+        this.toast(`📂 Loaded: ${fileName}`,'success');
+        // Check if migration was applied
+        if(LevelParser.isDirty()){
+            this.log('🔄 Level auto-migrated for game compatibility (OverrideFacing, SpawnFacing, TangentMode)','info');
+            this.toast('🔄 Level migrated — save to apply','warning',5000);
+        }
     },
     async loadMetadata(e) {
         const f=e.target.files[0]; if(!f)return;
@@ -365,14 +427,16 @@ const App = {
         e.target.value='';
     },
     saveLevel() {
-        if(!LevelParser.isLoaded()){this.log('No level','warning');return;}
+        if(!LevelParser.isLoaded()){this.log('No level','warning');this.toast('No level loaded','warning');return;}
         const json=LevelParser.serialize();
         const blob=new Blob([json],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=LevelParser.getFileName();a.click();URL.revokeObjectURL(url);
         try{const rp=(typeof safeParse==='function')?safeParse(json):JSON.parse(json);const ok=LevelParser.countKeys();const sk=this._countKeys(rp);
-        this.log(ok===sk?`✅ Saved: ${LevelParser.getFileName()} (${ok} keys verified)`:`⚠ Key mismatch: ${ok}→${sk}`,'info');}catch(e){this.log(`Saved: ${LevelParser.getFileName()}`,'info');}
+        this.log(ok===sk?`✅ Saved: ${LevelParser.getFileName()} (${ok} keys verified)`:`⚠ Key mismatch: ${ok}→${sk}`,'info');
+        this.toast(ok===sk?`💾 Saved: ${LevelParser.getFileName()}`:`⚠ Saved with key mismatch`,ok===sk?'success':'warning');
+        }catch(e){this.log(`Saved: ${LevelParser.getFileName()}`,'info');this.toast(`💾 Saved: ${LevelParser.getFileName()}`,'success');}
     },
-    createNewLevel(){const n=prompt('Level name:','New_Level');if(!n)return;LevelParser.createBlank(n);document.querySelector('#current-file-name').textContent=LevelParser.getFileName();this.log(`Created: ${n}`,'info');this.refreshAll();},
-    duplicateLevel(){if(!LevelParser.isLoaded())return;const n=prompt('Name:',LevelParser.getName()+'_copy');if(!n)return;LevelParser.duplicate(n);document.querySelector('#current-file-name').textContent=LevelParser.getFileName();this.refreshAll();},
+    createNewLevel(){const n=prompt('Level name:','New_Level');if(!n)return;LevelParser.createBlank(n);document.querySelector('#current-file-name').textContent=LevelParser.getFileName();this.log(`Created: ${n}`,'info');this.toast(`🆕 Created: ${n}`,'success');this.refreshAll();},
+    duplicateLevel(){if(!LevelParser.isLoaded())return;const n=prompt('Name:',LevelParser.getName()+'_copy');if(!n)return;LevelParser.duplicate(n);document.querySelector('#current-file-name').textContent=LevelParser.getFileName();this.toast(`⧉ Duplicated as: ${n}`,'info');this.refreshAll();},
     runIntegrityTest(){if(!LevelParser.isLoaded())return;const ok=LevelParser.countKeys();const json=LevelParser.serialize();const rp=(typeof safeParse==='function')?safeParse(json):JSON.parse(json);const sk=this._countKeys(rp);this.log(ok===sk?`✅ Integrity: ${ok} keys`:`❌ ${ok}→${sk}`,'info');},
     _countKeys(o){let c=0;if(o&&typeof o==='object')for(const k of Object.keys(o)){c++;c+=this._countKeys(o[k]);}return c;},
     refreshAll(){this.renderHierarchy();this.renderTimeline();if(MetadataDB.isLoaded())this.renderPalette();},
@@ -383,6 +447,12 @@ const App = {
     renderHierarchy() {
         const c=document.querySelector('#hierarchy-tree');c.innerHTML='';
         if(!LevelParser.isLoaded()){c.innerHTML='<div class="empty-state">No level loaded</div>';return;}
+        // Quick filter for hierarchy
+        const filterBox=this._el('input',{type:'text',placeholder:'🔍 Filter events...',class:'hierarchy-filter',style:'width:100%;padding:4px 8px;font-size:11px;background:var(--bg-active);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);color:var(--text-primary);outline:none;margin-bottom:4px'});
+        filterBox.value=this._hierarchyFilter||'';
+        filterBox.oninput=()=>{this._hierarchyFilter=filterBox.value;this.renderHierarchy();};
+        c.appendChild(filterBox);
+        const hFilter=(this._hierarchyFilter||'').toLowerCase();
         const d=LevelParser.getData(),s=d.Settings;
         const root=this._ts('📄 '+(d.m_Name||'Level'),'root',true);c.appendChild(root.el);
         root.ch.appendChild(this._tl('⚙ Settings',()=>this.inspectSettings()));
@@ -401,7 +471,10 @@ const App = {
             const tt=Schema.getEventTriggerTime(evt);
             const tl=tt>=0?`@${tt.toFixed(0)}s`:'⚡';
             const summary=Schema.getEventSummary(evt);
-            const evNode=this._ts(`[${ei}] ${tl} ${summary}`,`ev${ei}`,ei===this.selectedEventIdx);
+            const fullLabel=`[${ei}] ${tl} ${summary}`;
+            // Filter: skip non-matching events
+            if(hFilter && !fullLabel.toLowerCase().includes(hFilter) && !JSON.stringify(evt).toLowerCase().includes(hFilter)) return;
+            const evNode=this._ts(fullLabel,`ev${ei}`,ei===this.selectedEventIdx || !!hFilter);
             // Click event header → show event overview
             evNode.el.querySelector('.tree-node-header').addEventListener('click',e=>{e.stopPropagation();evNode.el.classList.toggle('expanded');this.selectedEventIdx=ei;this.selectedActionIdx=-1;this.selectedTriggerIdx=-1;this.inspectEventOverview(ei);this.renderTimeline();});
             evNode.el.querySelector('.tree-node-header').addEventListener('contextmenu',e=>{e.preventDefault();this.showEventContextMenu(e,ei);});
@@ -427,6 +500,8 @@ const App = {
         // Root extras
         const rx=Object.keys(d).filter(k=>!['m_GameObject','m_Enabled','m_Script','m_Name','Settings'].includes(k));
         if(rx.length){const rxN=this._ts(`📦 Root (${rx.length})`,'rx');rx.forEach(k=>rxN.ch.appendChild(this._tl(`📎 ${k}`,()=>this.inspectObject(d[k],k,k))));root.ch.appendChild(rxN.el);}
+        // Refocus filter input if it was active
+        if(hFilter){const fi=c.querySelector('.hierarchy-filter');if(fi){fi.focus();fi.setSelectionRange(fi.value.length,fi.value.length);}}
     },
 
     _ts(label,id,expanded=false){const n=document.createElement('div');n.className='tree-node'+(expanded?' expanded':'');const h=document.createElement('div');h.className='tree-node-header';h.innerHTML=`<span class="tree-node-toggle">▶</span><span>${label}</span>`;h.onclick=e=>{e.stopPropagation();n.classList.toggle('expanded');};const ch=document.createElement('div');ch.className='tree-node-children';n.appendChild(h);n.appendChild(ch);return{el:n,ch};},
@@ -478,7 +553,7 @@ const App = {
         if(!MetadataDB.isLoaded()){palette.innerHTML='<div class="empty-state">Load metadata</div>';return;}
         // Tabs
         const tabs=document.createElement('div');tabs.className='palette-tabs';
-        const tabList=['Units','Generals','Spells','Equipment','Statues','Research','All'];
+        const tabList=['Units','Generals','Spells','Equipment','Statues','Research','Banners','Skins','All'];
         tabList.forEach(tab=>{const btn=document.createElement('button');btn.className='palette-tab'+(this._paletteTab===tab?' active':'');
             if(this._contextCategory===tab)btn.classList.add('context-highlight');
             btn.textContent=tab;btn.onclick=()=>{this._paletteTab=tab;this.renderPalette(document.querySelector('#unit-search')?.value||'');};tabs.appendChild(btn);});
@@ -489,10 +564,10 @@ const App = {
         palette.appendChild(controls);
         // Filter entries
         let entries=[];
-        const catMap={Units:['Unit','Entity'],Generals:['General'],Spells:['Spell'],Equipment:['Equipment'],Statues:['Statue'],Research:['Research','Tech'],UpgradeBuilding:['UpgradeBuilding']};
+        const catMap={Units:['Unit','Entity'],Generals:['General'],Spells:['Spell'],Equipment:['Equipment'],Statues:['Statue'],Research:['Research','Tech'],UpgradeBuilding:['UpgradeBuilding'],Banners:['Banner'],Skins:['Skin','UnitCustomization']};
         if(this._paletteTab==='All'){entries=MetadataDB.search(filter||'',null);}
         else{const cats=catMap[this._paletteTab]||[];cats.forEach(cat=>{entries=entries.concat(MetadataDB.getByCategory(cat));});if(filter){const q=filter.toLowerCase();entries=entries.filter(e=>e.DisplayName&&e.DisplayName.toLowerCase().includes(q));}}
-        if(this._paletteTab==='Units'&&typeof MetadataDB.getUnits==='function'&&!filter)entries=MetadataDB.getUnits();
+        if(this._paletteTab==='Units'&&typeof MetadataDB.getUnits==='function'&&!filter)entries=MetadataDB.getUnits().filter(e=>e.Category!=='General');
         entries=entries.slice(0,300);
         if(!entries.length){palette.appendChild(this._el('div',{class:'empty-state',textContent:'No items'}));return;}
         // Grid
@@ -509,7 +584,7 @@ const App = {
         palette.appendChild(grid);
     },
 
-    _getCatIcon(c){return{Unit:'⚔',General:'👑',Spell:'✨',Equipment:'🛡',Statue:'🏛',Entity:'👤',BackDrop:'🖼',VFX:'💥',GameType:'🎮',Research:'🔬',Tech:'🔬',UpgradeBuilding:'🏗',Wall:'🧱',AITeam:'🤖',LevelVariant:'🎭',CapturePoint:'🚩'}[c]||'📦';},
+    _getCatIcon(c){return{Unit:'⚔',General:'👑',Spell:'✨',Equipment:'🛡',Statue:'🏛',Entity:'👤',BackDrop:'🖼',VFX:'💥',GameType:'🎮',Research:'🔬',Tech:'🔬',UpgradeBuilding:'🏗',Wall:'🧱',AITeam:'🤖',LevelVariant:'🎭',CapturePoint:'🚩',Banner:'🏴',ProfilePic:'🖼',Skin:'🎨',UnitCustomization:'🎭',Level:'🗺',Slottable:'📋',Music:'🎵',Video:'🎥',Prefab:'🔩',Projectile:'🏹',SFX:'🔊',Localization:'🌐',Other:'📄'}[c]||'📦';},
 
     addAssetToSelectedAction(entry) {
         if(this.selectedEventIdx<0){this.log('Select an event first','warning');return;}
@@ -577,6 +652,15 @@ const App = {
     inspectSettings() {
         const ins=document.querySelector('#property-inspector');ins.innerHTML='';
         const s=LevelParser.getSettings();if(!s)return;
+        // Quick stats summary
+        const evts=LevelParser.getEvents();
+        const totalActions=evts.reduce((sum,e)=>(e.Actions?.Array?.length||0)+sum,0);
+        const totalTriggers=evts.reduce((sum,e)=>(e.Triggers?.Array?.length||0)+sum,0);
+        const leftTeams=s.LeftTeams?.Array?.length||0;
+        const rightTeams=s.RightTeams?.Array?.length||0;
+        const statsBar=this._el('div',{style:'display:flex;gap:12px;padding:8px 12px;background:var(--bg-active);border-radius:var(--radius-md);margin-bottom:8px;font-size:11px;color:var(--text-secondary)'});
+        statsBar.innerHTML=`<span>⚡ ${evts.length} events</span><span>🎬 ${totalActions} actions</span><span>🎯 ${totalTriggers} triggers</span><span>👥 ${leftTeams+rightTeams} teams</span>`;
+        ins.appendChild(statsBar);
         this.renderGenericProps(s,'Settings',ins,'⚙ Level Settings');
         ins.appendChild(this._rawJsonEditor('Settings',s,'Edit settings JSON'));
     },
@@ -1035,10 +1119,10 @@ const App = {
                 const addBtn=this._el('button',{class:'btn-add-inline',textContent:'＋ Add Item',style:'padding:2px 6px'});
                 addBtn.onclick=e=>{
                     e.stopPropagation();
-                    const assetRefKeys=['Customizations','Techs','Loadout','AiBuildTargets','BuildArmyDatas','Spells','UnitsToSpawn','Units'];
+                    const assetRefKeys=['Customizations','Techs','Loadout','AiBuildTargets','BuildArmyDatas','Spells','UnitsToSpawn','Units','Slots'];
                     if(assetRefKeys.includes(key)) {
                         // Open asset picker for asset-reference arrays
-                        const catMap={Customizations:'UnitCustomization',Techs:'Tech',Loadout:'Slottable',AiBuildTargets:'Unit',BuildArmyDatas:'Unit',Spells:'Spell',UnitsToSpawn:'Unit',Units:'Unit'};
+                        const catMap={Customizations:'UnitCustomization',Techs:'Tech',Loadout:'Slottable',AiBuildTargets:'Unit',BuildArmyDatas:'Unit',Spells:'Spell',UnitsToSpawn:'Unit',Units:'Unit',Slots:'Slottable'};
                         const pickerCat=catMap[key];
                         if(pickerCat) {
                             this.openAssetPicker(pickerCat, entry=>{
@@ -1056,16 +1140,22 @@ const App = {
                             val.Array.push({Id:{Value:"0"}});
                             LevelParser._dirty=true;this.refreshInspector();
                         }
+                    } else if(key==='ExtraSlotsForDifficulty') {
+                        // ExtraSlotsForDifficulty: add blank entry with Difficulty picker
+                        LevelParser._pushUndo();
+                        val.Array.push({ Difficulty: 0, Slots: { Array: [] } });
+                        LevelParser._dirty=true;this.refreshInspector();
+                        this.log('+ Added ExtraSlot entry (Difficulty: Normal)','info');
                     } else if(val.Array.length>0) {
                         LevelParser._pushUndo();
                         val.Array.push(JSON.parse(JSON.stringify(val.Array[val.Array.length-1])));
                         LevelParser._dirty=true;this.refreshInspector();
                     } else {
                         LevelParser._pushUndo();
-                        const isScalar = key.includes('Difficulties') || key.includes('Slots') || key==='DifficultiesToSpawnOn' || key==='ExtraSlotsForDifficulty' || key==='Samples';
+                        const isScalar = key.includes('Difficulties') || key==='DifficultiesToSpawnOn' || key==='Samples';
                         const isCurveKey = key==='Keys';
                         if(isScalar) val.Array.push(0);
-                        else if(isCurveKey) val.Array.push({Time:{RawValue:0},Value:{RawValue:0},InTangent:{RawValue:0},OutTangent:{RawValue:0}});
+                        else if(isCurveKey) val.Array.push({Time:{RawValue:0},Value:{RawValue:0},InTangent:{RawValue:0},OutTangent:{RawValue:0},TangentMode:0,TangentModeLeft:1,TangentModeRight:1,WeightedMode:0});
                         else val.Array.push({});
                         LevelParser._dirty=true;this.refreshInspector();
                     }
@@ -1081,7 +1171,20 @@ const App = {
             else if(typeof val==='object'&&val.X?.RawValue!==undefined&&val.Y){rows.push(this._propFP(`${key}.X`,val.X.RawValue,v=>LevelParser.set(`${fp}.X.RawValue`,Schema.realToFp(v))));rows.push(this._propFP(`${key}.Y`,val.Y.RawValue,v=>LevelParser.set(`${fp}.Y.RawValue`,Schema.realToFp(v))));if(val.Z?.RawValue!==undefined)rows.push(this._propFP(`${key}.Z`,val.Z.RawValue,v=>LevelParser.set(`${fp}.Z.RawValue`,Schema.realToFp(v))));}
             else if(typeof val==='object'&&!Array.isArray(val)){const g=this._el('div',{class:'prop-group-nested'});const h=this._el('div',{class:'prop-group-header'});h.textContent=`▶ ${key}`;const c=this._el('div',{style:'display:none;padding-left:8px;border-left:2px solid var(--border-subtle)'});h.onclick=()=>{const o=c.style.display!=='none';c.style.display=o?'none':'block';h.textContent=(o?'▶':'▼')+` ${key}`;};this.renderGenericProps(val,fp,c,null);g.appendChild(h);g.appendChild(c);rows.push(g);}
             else if(typeof val==='string')rows.push(this._propText(key,val,v=>LevelParser.set(fp,v)));
-            else if(typeof val==='number'){if(val>1e15)rows.push(this._propAssetRef(key,String(val),fp));else rows.push(this._propNumber(key,val,v=>LevelParser.set(fp,v)));}
+            else if(typeof val==='number'){
+                // Special dropdown fields
+                if(key==='Difficulty'){
+                    const diffMap={0:'Normal',1:'Hard',2:'Insane'};
+                    rows.push(this._propDropdown(key,val,diffMap,v=>LevelParser.set(fp,parseInt(v))));
+                } else if(key==='EventTriggerType'){
+                    const trigMap={};Object.entries(Schema.TRIGGER_TYPES).forEach(([k,v])=>{trigMap[k]=v.label;});
+                    rows.push(this._propDropdown(key,val,trigMap,v=>LevelParser.set(fp,parseInt(v))));
+                } else if(key==='ActionType'){
+                    const actMap={};Object.entries(Schema.ACTION_TYPES).forEach(([k,v])=>{actMap[k]=v.label;});
+                    rows.push(this._propDropdown(key,val,actMap,v=>LevelParser.set(fp,parseInt(v))));
+                } else if(val>1e15)rows.push(this._propAssetRef(key,String(val),fp));
+                else rows.push(this._propNumber(key,val,v=>LevelParser.set(fp,v)));
+            }
             else if(typeof val==='boolean')rows.push(this._propCheckbox(key,val?1:0,v=>LevelParser.set(fp,!!v)));
             else rows.push(this._propRow(key,this._el('span',{style:'color:var(--text-muted);font-size:11px',textContent:JSON.stringify(val).substring(0,60)})));
         }
@@ -1166,8 +1269,14 @@ const App = {
     _search(q){const r=document.querySelector('#global-search-results');r.innerHTML='';if(!q||q.length<2)return;if(MetadataDB.isLoaded())MetadataDB.search(q,null).slice(0,10).forEach(e=>{const d=this._el('div',{class:'search-result-item'});d.innerHTML=`<span class="search-cat">${this._getCatIcon(e.Category)} ${e.Category||''}</span> ${e.DisplayName}`;d.onclick=()=>{this.showRefExplorer(e);document.querySelector('#global-search-modal').style.display='none';};r.appendChild(d);});if(LevelParser.isLoaded())LevelParser.getEvents().forEach((evt,i)=>{const s=Schema.getEventSummary(evt);if(s.toLowerCase().includes(q.toLowerCase())){const d=this._el('div',{class:'search-result-item'});d.innerHTML=`<span class="search-cat">⚡</span> [${i}] ${s}`;d.onclick=()=>{this.selectedEventIdx=i;this.inspectEventOverview(i);document.querySelector('#global-search-modal').style.display='none';};r.appendChild(d);}});},
 
     // ─── VALIDATION / LOG ───
-    runValidation(){if(!LevelParser.isLoaded())return;const r=Validator.validate();if(!r.length)this.log('✅ No issues','info');else r.forEach(x=>this.log(`[${x.level.toUpperCase()}] ${x.message}`,x.level));},
+    runValidation(){if(!LevelParser.isLoaded())return;const r=Validator.validate();if(!r.length){this.log('✅ No issues','info');this.toast('✅ Validation passed — no issues','success');}else{const errs=r.filter(x=>x.level==='error').length;const warns=r.filter(x=>x.level==='warning').length;r.forEach(x=>this.log(`[${x.level.toUpperCase()}] ${x.message}`,x.level));this.toast(`⚠ ${errs} error(s), ${warns} warning(s)`,errs?'error':'warning');}},
     log(msg,type='info'){const c=document.querySelector('#log-container');const e=this._el('div',{class:`log-entry ${type}`});e.innerHTML=`<span class="time">${new Date().toLocaleTimeString()}</span> ${msg}`;c.prepend(e);},
+    toast(msg, type='info', duration=3500) {
+        const t = this._el('div', {class: `toast-notification ${type}`});
+        t.textContent = msg;
+        document.body.appendChild(t);
+        setTimeout(() => { t.style.animation = 'toastOut 0.3s ease-in forwards'; setTimeout(() => t.remove(), 300); }, duration);
+    },
 
     // ─── LABEL HUMANIZER ───
     _LABEL_MAP: {
@@ -1187,8 +1296,49 @@ const App = {
         'SpawnUnits':'Spawn Units','SpawnGeneral':'Spawn General','CameraPan':'Camera Pan',
         'GiveSpeech':'Speech','SideWin':'Side Win','RawValue':'Value',
         'ExtraSlotsForDifficulty':'Extra Slots','DifficultiesToSpawnOn':'Spawn Difficulties',
+        'OverrideFacing':'Override Facing','SpawnFacing':'Spawn Facing',
+        'TangentMode':'Tangent Mode','TangentModeLeft':'Tangent Left','TangentModeRight':'Tangent Right','WeightedMode':'Weighted Mode',
         'HasDesperation':'Has Desperation','HasTemporaryStatueProtection':'Temp Statue Protection',
         'StatueHealthFractionToTriggerAt':'Desperation Trigger HP%',
+    },
+    _TOOLTIP_MAP: {
+        'ShouldScaleWithTime':'Scale unit count based on elapsed game time',
+        'ScaleEndTime':'Time (seconds) when scaling reaches max multiplier',
+        'ScaleCurve':'Animation curve defining how spawn count scales over time',
+        'AlwaysAttacks':'Units will attack immediately after spawning',
+        'AlwaysAttacksStatue':'Units will prioritize attacking the enemy statue',
+        'HoldPosition':'Units stay at their spawn position instead of advancing',
+        'NoGeneralRespawn':'Prevent the general from respawning after death',
+        'NoGeneralInjured':'General cannot enter injured state',
+        'SilentSpawn':'Spawn units without the visual/audio spawn effect',
+        'SleepTime':'Time (seconds) units remain asleep after spawning',
+        'AllowRespawn':'Allow the general to respawn after being killed',
+        'IsContinuous':'Trigger fires continuously while condition is met',
+        'IsRecurring':'Trigger repeats at intervals after first fire',
+        'TimeBetween':'Interval (seconds) between recurring triggers',
+        'NegateLogic':'Invert the trigger logic (fire when condition is NOT met)',
+        'AddRandomnessToSpawnPosition':'Add random offset to unit spawn positions',
+        'SpawnAtPosition':'Spawn units at a specific X/Y position instead of default',
+        'HasInstantTransition':'Camera snaps instantly instead of smooth pan',
+        'UseCinematicCamera':'Use letterbox cinematic camera mode',
+        'ImmediatelyQuit':'End the level immediately without showing results',
+        'ShouldDestroyStatue':'Play statue destruction animation on win',
+        'AllowUnitAiUpdates':'Allow AI to continue during cutscene mode',
+        'ShouldPlaceAtPosition':'Place entity at a specific position',
+        'ShouldPlaceOnTeam':'Assign spawned entity to a team',
+        'HasOverride':'Enable the ranged attack override',
+        'DisableBuildingUnits':'Prevent building new units after statue removal',
+        'DisableCastleArchidon':'Disable castle archidon after statue removal',
+        'MinerFormationCommand':'AI miner formation behavior (0=none, 1=standard)',
+        'AllowPlayersLoadoutOverride':'Allow player to use their own loadout',
+        'OverrideStatueHealth':'Override default statue HP with custom value',
+        'HasTemporaryStatueProtection':'Statue is invulnerable for initial period',
+        'OverrideFacing':'Override unit facing direction on spawn (0=default, 1=override)',
+        'SpawnFacing':'Direction to face when OverrideFacing is enabled (0=right, 1=left)',
+        'TangentMode':'Curve key tangent interpolation mode',
+        'TangentModeLeft':'Left tangent mode (0=free, 1=linear)',
+        'TangentModeRight':'Right tangent mode (0=free, 1=linear)',
+        'WeightedMode':'Weighted tangent mode for curve interpolation',
     },
     // Map AssetRef field names to picker categories
     _ASSETREF_CAT_MAP: {
@@ -1249,6 +1399,13 @@ const App = {
             let entries = [];
             if(cats) cats.forEach(c => { entries = entries.concat(MetadataDB.getByCategory(c)); });
             if (category === 'Unit' && typeof MetadataDB.getUnits === 'function') entries = MetadataDB.getUnits();
+            // Filter out campaign general templates from Unit/Slottable pickers
+            if(category === 'Unit' || category === 'Slottable') {
+                entries = entries.filter(e => {
+                    const p = (e.Path||'').toLowerCase();
+                    return !p.includes('/campaign/generals/') && !p.includes('/campaign/zarekscampaign/generals/');
+                });
+            }
             // If no category (null), show ALL non-technical assets
             if (!category) {
                 entries = [];
@@ -1273,13 +1430,14 @@ const App = {
     // ─── HELPERS ───
     _el(tag,attrs){const el=document.createElement(tag);if(attrs)Object.entries(attrs).forEach(([k,v])=>{if(k==='textContent')el.textContent=v;else if(k==='class')el.className=v;else if(k==='innerHTML')el.innerHTML=v;else el.setAttribute(k,v);});return el;},
     _propGroup(title,rows){const g=this._el('div',{class:'property-group'});g.appendChild(this._el('div',{class:'property-group-header',textContent:title}));rows.forEach(r=>{if(r instanceof HTMLElement)g.appendChild(r);});return g;},
-    _propRow(label,el){const r=this._el('div',{class:'property-row'});const l=this._el('div',{class:'property-label',title:label});l.textContent=this._humanize(label);const v=this._el('div',{class:'property-value'});v.appendChild(el);r.appendChild(l);r.appendChild(v);return r;},
+    _propRow(label,el){const r=this._el('div',{class:'property-row'});const tooltip=this._TOOLTIP_MAP[label]||'';const l=this._el('div',{class:'property-label',title:tooltip||label});l.textContent=this._humanize(label);const v=this._el('div',{class:'property-value'});v.appendChild(el);r.appendChild(l);r.appendChild(v);return r;},
     _propScalar(l,v,p){if(typeof v==='string')return this._propText(l,v,x=>LevelParser.set(p,x));if(typeof v==='number')return this._propNumber(l,v,x=>LevelParser.set(p,x));return this._propRow(l,this._el('span',{textContent:String(v)}));},
     _propText(l,v,fn){const i=this._el('input',{type:'text',value:v||''});i.onchange=()=>fn(i.value);return this._propRow(l,i);},
     _propNumber(l,v,fn){const i=this._el('input',{type:'number',step:'any',value:v});i.onchange=()=>{const n=Number(i.value);fn(Number.isFinite(n)?n:0);};return this._propRow(l,i);},
     _propFP(l,raw,fn){const i=this._el('input',{type:'number',step:'0.1',value:Schema.fpToReal(raw).toFixed(2)});i.title=`Raw: ${raw}`;i.onchange=()=>{fn(parseFloat(i.value)||0);this.renderTimeline();};return this._propRow(l,i);},
     _propCheckbox(l,v,fn){const i=this._el('input',{type:'checkbox'});i.checked=!!(v&&v!=='0');i.onchange=()=>fn(i.checked);return this._propRow(l,i);},
     _propSelect(l,v,opts,fn){const s=this._el('select');opts.forEach(o=>{const opt=this._el('option',{value:o.value});opt.textContent=o.label;if(String(o.value)===String(v))opt.selected=true;s.appendChild(opt);});s.onchange=()=>fn(parseInt(s.value));return this._propRow(l,s);},
+    _propDropdown(l,v,map,fn){const opts=Object.entries(map).map(([k,label])=>({value:parseInt(k),label:`${label} (${k})`}));return this._propSelect(l,v,opts,fn);},
     // ─── SMART ENUM HELPERS ───
     _propSide(l,v,fn){return this._propSelect(l,v,[{value:0,label:'← Left Team'},{value:1,label:'Right Team →'}],(val)=>{fn(val);this.refreshInspector();});},
     _propTeam(l,v,fn,side){
@@ -1292,6 +1450,10 @@ const App = {
             opts.push({value:i,label:tn?`Team ${i} — ${tn}`:`Team ${i}`});
         }
         if(!opts.length) for(let i=0;i<4;i++) opts.push({value:i,label:`Team ${i}`});
+        // If current value is out of range, add it as a warning option
+        if(v>=0 && !opts.find(o=>o.value===v)){
+            opts.push({value:v,label:`Team ${v} ⚠ (out of range)`});
+        }
         return this._propSelect(l,v,opts,fn);
     },
     _propBool(l,v,fn,tooltip){const r=this._el('div',{class:'property-row'});const lb=this._el('div',{class:'property-label',title:tooltip||l});lb.textContent=this._humanize(l);const vd=this._el('div',{class:'property-value',style:'display:flex;align-items:center;gap:8px'});const cb=this._el('input',{type:'checkbox'});cb.checked=!!(v&&v!=='0'&&v!==0);const lbl=this._el('span',{style:'font-size:11px;color:var(--text-muted)'});lbl.textContent=cb.checked?'Yes':'No';cb.onchange=()=>{lbl.textContent=cb.checked?'Yes':'No';fn(cb.checked?1:0);};vd.appendChild(cb);vd.appendChild(lbl);r.appendChild(lb);r.appendChild(vd);return r;},

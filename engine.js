@@ -181,7 +181,7 @@ window.Schema = {
         ScaleCurve: { Samples: { Array: [] }, PreWrapMode: 0, PostWrapMode: 0, StartTime: { RawValue: 0 }, EndTime: { RawValue: 0 }, Resolution: 0, OriginalPreWrapMode: 0, OriginalPostWrapMode: 0, Keys: { Array: [] } },
         AlwaysAttacks: 1, AlwaysAttacksStatue: 0, HoldPosition: 0,
         AddRandomnessToSpawnPosition: 0, NoGeneralRespawn: 0, NoGeneralInjured: 0,
-        Label: '', SilentSpawn: 0, SleepTime: { RawValue: 0 }
+        Label: '', SilentSpawn: 0, OverrideFacing: 0, SpawnFacing: 0, SleepTime: { RawValue: 0 }
       },
       SpawnGeneral: { Side: 0, TeamIndex: 0, SpawnAtPosition: 0, SpawnPosition: { X: { RawValue: 0 }, Y: { RawValue: 0 } }, Label: '', SilentSpawn: 0, AllowRespawn: 1 },
       CameraPan: { Type: 0, Label: '', Position: { RawValue: 0 }, Rate: { RawValue: 65536 }, MaxSpeed: { RawValue: 655360 }, UseCinematicCamera: 1, ZoomOutFromCinematicCamera: 0, ZoomCameraOnEntity: 0, HasInstantTransition: 0, EntityBoneToFollow: 0 },
@@ -981,11 +981,42 @@ window.LevelParser = {
       this._dirty = false;
       this._undoStack = [];
       this._redoStack = [];
+      // Migrate old levels to new schema
+      this._migrateLevel();
       this._pushUndo();
       return true;
     } catch(e) {
       console.error('Parse error:', e);
       return false;
+    }
+  },
+
+  // Auto-inject missing fields for game compatibility
+  _migrateLevel() {
+    if (!this._data?.Settings?.Events?.Array) return;
+    let migrated = 0;
+    this._data.Settings.Events.Array.forEach(evt => {
+      (evt.Actions?.Array || []).forEach(act => {
+        // SpawnUnits: add OverrideFacing, SpawnFacing
+        if (act.SpawnUnits) {
+          if (act.SpawnUnits.OverrideFacing === undefined) { act.SpawnUnits.OverrideFacing = 0; migrated++; }
+          if (act.SpawnUnits.SpawnFacing === undefined) { act.SpawnUnits.SpawnFacing = 0; migrated++; }
+          // ScaleCurve Keys: add TangentMode fields
+          const keys = act.SpawnUnits.ScaleCurve?.Keys?.Array;
+          if (keys) {
+            keys.forEach(k => {
+              if (k.TangentMode === undefined) { k.TangentMode = 0; migrated++; }
+              if (k.TangentModeLeft === undefined) { k.TangentModeLeft = 1; migrated++; }
+              if (k.TangentModeRight === undefined) { k.TangentModeRight = 1; migrated++; }
+              if (k.WeightedMode === undefined) { k.WeightedMode = 0; migrated++; }
+            });
+          }
+        }
+      });
+    });
+    if (migrated > 0) {
+      console.log(`[Migration] Added ${migrated} missing fields for game compatibility`);
+      this._dirty = true;
     }
   },
   
@@ -1257,6 +1288,21 @@ window.Validator = {
       });
       
       actions.forEach((act, j) => {
+        const aType = window.Schema.ACTION_TYPES[act.ActionType];
+        const dk = aType?.dataKey;
+        const adata = dk ? act[dk] : null;
+
+        // Check Side/TeamIndex for any action that has them
+        if (adata && adata.Side !== undefined && adata.Side > 1) {
+          results.push({ level: 'warning', message: `Event ${i}, Action ${j} (${aType?.label||'?'}): Side > 1`, path: `Events.${i}.Actions.${j}` });
+        }
+        if (adata && adata.TeamIndex !== undefined) {
+          const maxT = (adata.Side === 1) ? rightTeams.length : leftTeams.length;
+          if (maxT > 0 && adata.TeamIndex >= maxT) {
+            results.push({ level: 'warning', message: `Event ${i}, Action ${j} (${aType?.label||'?'}): TeamIndex ${adata.TeamIndex} >= team count ${maxT}`, path: `Events.${i}.Actions.${j}` });
+          }
+        }
+
         if (act.ActionType === 0) { // SpawnUnits
           const units = act.SpawnUnits?.Units?.Array || [];
           if (units.length === 0) results.push({ level: 'warning', message: `Event ${i}, Action ${j}: SpawnUnits has no units`, path: `Events.${i}.Actions.${j}` });
@@ -1264,7 +1310,7 @@ window.Validator = {
           let spawnCount = 0;
           units.forEach((u, k) => {
             const val = u.AssetRefSlottableSpec?.Id?.Value;
-            if (!val || val === 0) results.push({ level: 'error', message: `Event ${i}, Action ${j}, Unit ${k}: Unit reference ID = 0`, path: `Events.${i}.Actions.${j}.Units.${k}` });
+            if (!val || val === 0 || val === '0') results.push({ level: 'error', message: `Event ${i}, Action ${j}, Unit ${k}: Unit reference ID = 0`, path: `Events.${i}.Actions.${j}.Units.${k}` });
             else if (window.MetadataDB.isLoaded() && !window.MetadataDB.resolve(val)) {
               results.push({ level: 'warning', message: `Event ${i}, Action ${j}, Unit ${k}: Unknown ID (not in metadata)`, path: `Events.${i}.Actions.${j}.Units.${k}` });
             }
@@ -1275,13 +1321,30 @@ window.Validator = {
           if (spawnCount > 50) {
             results.push({ level: 'info', message: `Event ${i}, Action ${j}: Spawn count > 50`, path: `Events.${i}.Actions.${j}` });
           }
-          
-          if (act.SpawnUnits.Side > 1) results.push({ level: 'warning', message: `Event ${i}, Action ${j}: Side > 1`, path: `Events.${i}.Actions.${j}` });
-          
-          const maxTeams = act.SpawnUnits.Side === 0 ? leftTeams.length : rightTeams.length;
-          if (act.SpawnUnits.TeamIndex >= maxTeams) {
-             results.push({ level: 'warning', message: `Event ${i}, Action ${j}: TeamIndex > actual team count`, path: `Events.${i}.Actions.${j}` });
-          }
+        }
+
+        // SpawnGeneral: check AssetRefSlottableSpec
+        if (act.ActionType === 1) {
+          const gid = act.SpawnGeneral?.AssetRefSlottableSpec?.Id?.Value;
+          if (!gid || gid === 0 || gid === '0') results.push({ level: 'error', message: `Event ${i}, Action ${j}: SpawnGeneral has no general assigned (ID=0)`, path: `Events.${i}.Actions.${j}` });
+        }
+
+        // GiveResearch: check ref
+        if (act.ActionType === 21) {
+          const rid = act.GiveResearch?.AssetRefSlottableSpec?.Id?.Value;
+          if (!rid || rid === 0 || rid === '0') results.push({ level: 'warning', message: `Event ${i}, Action ${j}: GiveResearch has no research assigned`, path: `Events.${i}.Actions.${j}` });
+        }
+
+        // GiveUpgradeBuilding: check ref
+        if (act.ActionType === 39) {
+          const uid = act.GiveUpgradeBuilding?.AssetRefUpgradeBuildingSpec?.Id?.Value;
+          if (!uid || uid === 0 || uid === '0') results.push({ level: 'warning', message: `Event ${i}, Action ${j}: GiveUpgradeBuilding has no building assigned`, path: `Events.${i}.Actions.${j}` });
+        }
+
+        // SpawnEntityPrototype: check ref
+        if (act.ActionType === 12) {
+          const eid = act.SpawnEntityPrototype?.AssetRefEntityPrototype?.Id?.Value;
+          if (!eid || eid === 0 || eid === '0') results.push({ level: 'warning', message: `Event ${i}, Action ${j}: SpawnEntityPrototype has no entity assigned`, path: `Events.${i}.Actions.${j}` });
         }
       });
     });
